@@ -39,7 +39,14 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 		if len(body) > 0 {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		switch {
+		case strings.HasPrefix(path, "/messages"):
+			req.Header.Set("x-api-key", c.cfg.APIKey)
+		case strings.HasPrefix(path, "/models/") && strings.Contains(path, "gemini"):
+			req.Header.Set("x-goog-api-key", c.cfg.APIKey)
+		default:
+			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		}
 		req.Header.Set("User-Agent", c.cfg.UserAgent)
 
 		resp, err := c.httpClient.Do(req)
