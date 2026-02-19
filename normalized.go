@@ -193,8 +193,25 @@ func (r NormalizedRequest) ToMessagesRequest() (*MessagesRequest, error) {
 	// Anthropic's messages API requires max_tokens; apply a default when the
 	// caller did not specify one so the normalized path works out of the box.
 	maxTokens := r.MaxTokens
+
+	// Resolve the thinking budget early so we can ensure max_tokens > budget_tokens,
+	// which is required by Anthropic's API.
+	var thinkingBudget int
+	if r.Reasoning != nil {
+		thinkingBudget = r.Reasoning.BudgetTokens
+		if thinkingBudget == 0 && r.Reasoning.Effort != "" {
+			thinkingBudget = mapEffortToBudget(r.Reasoning.Effort)
+		}
+	}
+
 	if maxTokens == nil {
 		defaultMax := 1024
+		// When reasoning is active, max_tokens must be strictly greater than
+		// budget_tokens. Default to twice the budget so there is room for the
+		// actual response text.
+		if thinkingBudget > 0 && thinkingBudget >= defaultMax {
+			defaultMax = thinkingBudget * 2
+		}
 		maxTokens = &defaultMax
 	}
 
@@ -208,14 +225,8 @@ func (r NormalizedRequest) ToMessagesRequest() (*MessagesRequest, error) {
 		Extra:       r.Extra,
 	}
 
-	if r.Reasoning != nil {
-		budget := r.Reasoning.BudgetTokens
-		if budget == 0 && r.Reasoning.Effort != "" {
-			budget = mapEffortToBudget(r.Reasoning.Effort)
-		}
-		if budget > 0 {
-			req.Thinking = &AnthropicThinking{Type: "enabled", BudgetTokens: budget}
-		}
+	if thinkingBudget > 0 {
+		req.Thinking = &AnthropicThinking{Type: "enabled", BudgetTokens: thinkingBudget}
 	}
 
 	if r.ToolChoice != nil && r.ToolChoice.Type == ToolChoiceNone {

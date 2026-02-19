@@ -12,7 +12,7 @@ import (
 )
 
 // One representative model per endpoint type.
-var probeModels = []string{"gpt-5.1", "claude-sonnet-4-6", "gemini-3-flash", "glm-5"}
+var probeModels = []string{"gpt-5.1", "claude-sonnet-4-6", "gemini-3-flash", "kimi-k2-thinking"}
 
 type testResult struct {
 	Model    string
@@ -55,6 +55,8 @@ func main() {
 		{"UnifiedStreamNormalized", testUnifiedStreamNormalized},
 		{"ToolHistory (normalized)", testToolHistoryNormalized},
 		{"ToolHistory (stream)", testToolHistoryNormalizedStream},
+		{"Reasoning (normalized)", testReasoningNormalized},
+		{"Reasoning (stream)", testReasoningNormalizedStream},
 	}
 
 	for _, s := range sections {
@@ -293,6 +295,36 @@ func testToolHistoryNormalizedStream(ctx context.Context, client *zen.Client, mo
 			},
 		},
 		Stream: true,
+	}
+	start := time.Now()
+	reqBody, _ := json.Marshal(req)
+
+	eventCh, errCh, err := client.UnifiedStreamNormalized(ctx, req)
+	return drainUnifiedStream(modelID, "auto", string(reqBody), eventCh, errCh, err, start)
+}
+
+func testReasoningNormalized(ctx context.Context, client *zen.Client, modelID string) testResult {
+	req := zen.NormalizedRequest{
+		Model:     modelID,
+		Messages:  []zen.NormalizedMessage{{Role: "user", Content: "What is 2 + 2? Think step by step."}},
+		Reasoning: &zen.NormalizedReasoning{Effort: "low"},
+	}
+	start := time.Now()
+	reqBody, _ := json.Marshal(req)
+
+	resp, err := client.UnifiedCreateNormalized(ctx, req)
+	if err != nil {
+		return makeResult(modelID, "auto", false, string(reqBody), "", err, time.Since(start))
+	}
+	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), truncate(string(resp.Body), 100), nil, time.Since(start))
+}
+
+func testReasoningNormalizedStream(ctx context.Context, client *zen.Client, modelID string) testResult {
+	req := zen.NormalizedRequest{
+		Model:     modelID,
+		Messages:  []zen.NormalizedMessage{{Role: "user", Content: "What is 2 + 2? Think step by step."}},
+		Reasoning: &zen.NormalizedReasoning{Effort: "low"},
+		Stream:    true,
 	}
 	start := time.Now()
 	reqBody, _ := json.Marshal(req)
