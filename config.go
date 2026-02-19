@@ -19,10 +19,19 @@ type Config struct {
 	APIKey  string
 	BaseURL string
 	// Timeout sets http.Client.Timeout on the internal HTTP client.
-	// Leave at 0 (the default) for streaming calls — http.Client.Timeout is a
-	// total round-trip deadline that fires while the response body is still being
-	// read, which breaks SSE streams that run longer than the timeout.
-	// Use the request context to enforce deadlines on streaming calls instead.
+	//
+	// WARNING: http.Client.Timeout is a total round-trip deadline — it starts
+	// when the request is sent and fires while the response body is still being
+	// read.  Setting a non-zero value WILL kill SSE/streaming responses that
+	// run longer than the deadline with "context deadline exceeded".
+	//
+	// Leave at 0 (the default) for streaming calls and enforce deadlines via
+	// the request context instead (e.g. context.WithTimeout / WithDeadline).
+	//
+	// The internal transport always applies a 30-second
+	// ResponseHeaderTimeout independently of this field, protecting against
+	// servers that accept the connection but never send headers.  This field
+	// has no effect when HTTPClient is supplied by the caller.
 	Timeout    time.Duration
 	UserAgent  string
 	HTTPClient *http.Client
