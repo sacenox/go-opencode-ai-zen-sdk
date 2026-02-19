@@ -235,6 +235,35 @@ func (c *Client) UnifiedStreamNormalized(ctx context.Context, req NormalizedRequ
 	}
 }
 
+// UnifiedStreamNormalizedParsed is like UnifiedStreamNormalized but parses each
+// raw SSE event into one or more NormalizedDelta values before yielding them.
+// This is the high-level streaming API: callers do not need to know the wire
+// format of the underlying endpoint.
+func (c *Client) UnifiedStreamNormalizedParsed(ctx context.Context, req NormalizedRequest) (<-chan NormalizedDelta, <-chan error, error) {
+	evCh, errCh, err := c.UnifiedStreamNormalized(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	out := make(chan NormalizedDelta)
+	outErr := make(chan error, 1)
+
+	go func() {
+		defer close(out)
+		defer close(outErr)
+		for ev := range evCh {
+			for _, delta := range ParseNormalizedEvent(ev) {
+				out <- delta
+			}
+		}
+		if streamErr := <-errCh; streamErr != nil {
+			outErr <- streamErr
+		}
+	}()
+
+	return out, outErr, nil
+}
+
 func (c *Client) resolveEndpoint(req UnifiedRequest) (EndpointType, string, string, error) {
 	endpoint := req.Endpoint
 	if endpoint == EndpointAuto {

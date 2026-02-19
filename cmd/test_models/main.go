@@ -316,7 +316,16 @@ func testReasoningNormalized(ctx context.Context, client *zen.Client, modelID st
 	if err != nil {
 		return makeResult(modelID, "auto", false, string(reqBody), "", err, time.Since(start))
 	}
-	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), truncate(string(resp.Body), 100), nil, time.Since(start))
+	// Parse the response body to check for reasoning content.
+	hasReasoning := responseHasReasoning(resp.Body)
+	summary := truncate(string(resp.Body), 100)
+	if !hasReasoning {
+		return makeResult(modelID, string(resp.Endpoint), false, string(reqBody),
+			"no reasoning content in response: "+summary,
+			fmt.Errorf("model %s: response contained no reasoning/thinking content", modelID),
+			time.Since(start))
+	}
+	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), summary, nil, time.Since(start))
 }
 
 func testReasoningNormalizedStream(ctx context.Context, client *zen.Client, modelID string) testResult {
@@ -329,8 +338,60 @@ func testReasoningNormalizedStream(ctx context.Context, client *zen.Client, mode
 	start := time.Now()
 	reqBody, _ := json.Marshal(req)
 
-	eventCh, errCh, err := client.UnifiedStreamNormalized(ctx, req)
-	return drainUnifiedStream(modelID, "auto", string(reqBody), eventCh, errCh, err, start)
+	deltaCh, errCh, err := client.UnifiedStreamNormalizedParsed(ctx, req)
+	if err != nil {
+		return makeResult(modelID, "auto", true, string(reqBody), "", err, time.Since(start))
+	}
+
+	var textBuf, reasoningBuf strings.Builder
+	var deltaCount int
+	var resolvedEndpoint string
+	for d := range deltaCh {
+		deltaCount++
+		switch d.Type {
+		case zen.DeltaText:
+			textBuf.WriteString(d.Content)
+		case zen.DeltaReasoning:
+			reasoningBuf.WriteString(d.Content)
+		}
+	}
+	if streamErr := <-errCh; streamErr != nil {
+		return makeResult(modelID, "auto", true, string(reqBody), "", streamErr, time.Since(start))
+	}
+	_ = resolvedEndpoint
+
+	if reasoningBuf.Len() == 0 {
+		return makeResult(modelID, "auto", true, string(reqBody),
+			fmt.Sprintf("deltas=%d text=%s", deltaCount, truncate(textBuf.String(), 60)),
+			fmt.Errorf("model %s: stream contained no reasoning/thinking deltas", modelID),
+			time.Since(start))
+	}
+	return makeResult(modelID, "auto", true, string(reqBody),
+		fmt.Sprintf("deltas=%d reasoning=%s text=%s",
+			deltaCount,
+			truncate(reasoningBuf.String(), 40),
+			truncate(textBuf.String(), 40)),
+		nil, time.Since(start))
+}
+
+// responseHasReasoning checks whether a raw JSON response body from any endpoint
+// contains reasoning or thinking content.
+func responseHasReasoning(body json.RawMessage) bool {
+	// Generic scan: look for non-empty reasoning/thinking fields across all formats.
+	// chat_completions: choices[].message.reasoning_content
+	// responses: output[].content[].type == "reasoning"
+	// messages: content[].type == "thinking"
+	// gemini: candidates[].content.parts[].thought == true
+	var v map[string]json.RawMessage
+	if err := json.Unmarshal(body, &v); err != nil {
+		return false
+	}
+	raw := string(body)
+	return strings.Contains(raw, `"reasoning_content"`) ||
+		strings.Contains(raw, `"thinking"`) ||
+		strings.Contains(raw, `"thought":true`) ||
+		strings.Contains(raw, `"type":"reasoning"`) ||
+		strings.Contains(raw, `"type":"thinking"`)
 }
 
 // drainStream consumes a StreamEvent channel and builds a testResult.
