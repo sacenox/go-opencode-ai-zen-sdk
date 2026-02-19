@@ -1,8 +1,10 @@
 package zen
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 )
 
@@ -32,9 +34,52 @@ type NormalizedReasoning struct {
 }
 
 type NormalizedToolCall struct {
-	ID        string
-	Name      string
-	Arguments json.RawMessage
+	ID               string
+	Name             string
+	Arguments        json.RawMessage
+	ThoughtSignature string
+}
+
+const geminiSignatureSeparator = "|ts="
+
+func encodeGeminiToolCallID(callID, signature string) string {
+	if signature == "" {
+		return callID
+	}
+	if strings.Contains(callID, geminiSignatureSeparator) {
+		return callID
+	}
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(signature))
+	return callID + geminiSignatureSeparator + encoded
+}
+
+func decodeGeminiThoughtSignature(callID string) (string, string) {
+	idx := strings.Index(callID, geminiSignatureSeparator)
+	if idx == -1 {
+		return callID, ""
+	}
+	base := callID[:idx]
+	encoded := callID[idx+len(geminiSignatureSeparator):]
+	if encoded == "" {
+		return base, ""
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return base, ""
+	}
+	return base, string(decoded)
+}
+
+func sortedNormalizedTools(tools []NormalizedTool) []NormalizedTool {
+	if len(tools) <= 1 {
+		return tools
+	}
+	sorted := make([]NormalizedTool, len(tools))
+	copy(sorted, tools)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Name < sorted[j].Name
+	})
+	return sorted
 }
 
 type NormalizedMessage struct {
@@ -137,8 +182,9 @@ func (r NormalizedRequest) ToResponsesRequest() (*ResponsesRequest, error) {
 	}
 
 	if len(r.Tools) > 0 {
-		req.Tools = make([]ResponsesTool, 0, len(r.Tools))
-		for _, t := range r.Tools {
+		tools := sortedNormalizedTools(r.Tools)
+		req.Tools = make([]ResponsesTool, 0, len(tools))
+		for _, t := range tools {
 			req.Tools = append(req.Tools, ResponsesTool{
 				Type:        "function",
 				Name:        t.Name,
@@ -192,12 +238,17 @@ func (r NormalizedRequest) ToChatCompletionsRequest() (*ChatCompletionsRequest, 
 	}
 
 	if r.Reasoning != nil && r.Reasoning.Effort != "" {
-		req.Reasoning = &ChatReasoning{Effort: r.Reasoning.Effort}
+		if req.Extra == nil {
+			req.Extra = map[string]any{}
+		}
+		// OpenAI-compatible reasoning uses reasoning_effort, not reasoning.
+		req.Extra["reasoning_effort"] = r.Reasoning.Effort
 	}
 
 	if len(r.Tools) > 0 {
-		req.Tools = make([]ChatTool, 0, len(r.Tools))
-		for _, t := range r.Tools {
+		tools := sortedNormalizedTools(r.Tools)
+		req.Tools = make([]ChatTool, 0, len(tools))
+		for _, t := range tools {
 			req.Tools = append(req.Tools, ChatTool{
 				Type:     "function",
 				Function: ChatToolFunction(t),
@@ -263,8 +314,9 @@ func (r NormalizedRequest) ToMessagesRequest() (*MessagesRequest, error) {
 	}
 
 	if len(r.Tools) > 0 {
-		req.Tools = make([]AnthropicTool, 0, len(r.Tools))
-		for _, t := range r.Tools {
+		tools := sortedNormalizedTools(r.Tools)
+		req.Tools = make([]AnthropicTool, 0, len(tools))
+		for _, t := range tools {
 			req.Tools = append(req.Tools, AnthropicTool{
 				Name:        t.Name,
 				Description: t.Description,
@@ -334,11 +386,16 @@ func (r NormalizedRequest) ToGeminiRequest() (*GeminiRequest, error) {
 		if role == "model" && len(m.ToolCalls) > 0 {
 			parts := make([]GeminiPart, 0, len(m.ToolCalls))
 			for _, tc := range m.ToolCalls {
+				signature := tc.ThoughtSignature
+				if signature == "" {
+					_, signature = decodeGeminiThoughtSignature(tc.ID)
+				}
 				parts = append(parts, GeminiPart{
 					FunctionCall: &GeminiFunctionCall{
 						Name: tc.Name,
 						Args: tc.Arguments,
 					},
+					ThoughtSignature: signature,
 				})
 			}
 			contents = append(contents, GeminiContent{Role: role, Parts: parts})
@@ -393,8 +450,9 @@ func (r NormalizedRequest) ToGeminiRequest() (*GeminiRequest, error) {
 	}
 
 	if len(r.Tools) > 0 {
-		tool := GeminiTool{FunctionDeclarations: make([]GeminiFunctionDeclaration, 0, len(r.Tools))}
-		for _, t := range r.Tools {
+		tools := sortedNormalizedTools(r.Tools)
+		tool := GeminiTool{FunctionDeclarations: make([]GeminiFunctionDeclaration, 0, len(tools))}
+		for _, t := range tools {
 			tool.FunctionDeclarations = append(tool.FunctionDeclarations, GeminiFunctionDeclaration(t))
 		}
 		req.Tools = []GeminiTool{tool}

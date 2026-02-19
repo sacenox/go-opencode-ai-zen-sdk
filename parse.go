@@ -2,6 +2,7 @@ package zen
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -33,11 +34,12 @@ type NormalizedDelta struct {
 	Content string
 
 	// Tool call fields.
-	ToolCallIndex  int    // index within this response (0-based)
-	ToolCallID     string // set on DeltaToolCallBegin / DeltaToolCallDone
-	ToolCallName   string // set on DeltaToolCallBegin / DeltaToolCallDone
-	ArgumentsDelta string // set on DeltaToolCallArgumentsDelta
-	ArgumentsFull  string // set on DeltaToolCallDone (fully accumulated)
+	ToolCallIndex     int    // index within this response (0-based)
+	ToolCallID        string // set on DeltaToolCallBegin / DeltaToolCallDone
+	ToolCallName      string // set on DeltaToolCallBegin / DeltaToolCallDone
+	ToolCallSignature string // set on DeltaToolCallBegin / DeltaToolCallDone when provided by provider
+	ArgumentsDelta    string // set on DeltaToolCallArgumentsDelta
+	ArgumentsFull     string // set on DeltaToolCallDone (fully accumulated)
 }
 
 // ParseNormalizedEvent parses a single UnifiedEvent into zero or more NormalizedDelta values.
@@ -75,7 +77,11 @@ type chatCompletionChunk struct {
 			Role             string `json:"role"`
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
+			Reasoning        string `json:"reasoning"`
+			ReasoningDetails []struct {
+				Text string `json:"text"`
+			} `json:"reasoning_details"`
+			ToolCalls []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -103,6 +109,14 @@ func parseChatCompletionsDelta(ev UnifiedEvent) []NormalizedDelta {
 
 	if delta.ReasoningContent != "" {
 		out = append(out, NormalizedDelta{Type: DeltaReasoning, Content: delta.ReasoningContent})
+	}
+	if delta.Reasoning != "" {
+		out = append(out, NormalizedDelta{Type: DeltaReasoning, Content: delta.Reasoning})
+	}
+	for _, detail := range delta.ReasoningDetails {
+		if detail.Text != "" {
+			out = append(out, NormalizedDelta{Type: DeltaReasoning, Content: detail.Text})
+		}
 	}
 	if delta.Content != "" {
 		out = append(out, NormalizedDelta{Type: DeltaText, Content: delta.Content})
@@ -142,13 +156,15 @@ type responsesEvent struct {
 	Delta string `json:"delta"`
 	// For tool call events.
 	Item struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		Type   string `json:"type"`
+		ID     string `json:"id"`
+		CallID string `json:"call_id"`
+		Name   string `json:"name"`
 	} `json:"item"`
 	OutputIndex int    `json:"output_index"`
 	Name        string `json:"name"`
 	CallID      string `json:"call_id"`
+	ItemID      string `json:"item_id"`
 	Arguments   string `json:"arguments"`
 }
 
@@ -167,7 +183,7 @@ func parseResponsesDelta(ev UnifiedEvent) []NormalizedDelta {
 		if e.Delta != "" {
 			return []NormalizedDelta{{Type: DeltaReasoning, Content: e.Delta}}
 		}
-	case "response.function_call_arguments_delta":
+	case "response.function_call_arguments_delta", "response.function_call_arguments.delta":
 		if e.Delta != "" {
 			return []NormalizedDelta{{
 				Type:           DeltaToolCallArgumentsDelta,
@@ -175,21 +191,42 @@ func parseResponsesDelta(ev UnifiedEvent) []NormalizedDelta {
 				ArgumentsDelta: e.Delta,
 			}}
 		}
-	case "response.function_call_arguments_done":
+	case "response.function_call_arguments_done", "response.function_call_arguments.done":
+		callID := e.CallID
+		if callID == "" {
+			callID = e.ItemID
+		}
 		return []NormalizedDelta{{
 			Type:          DeltaToolCallDone,
 			ToolCallIndex: e.OutputIndex,
-			ToolCallID:    e.CallID,
+			ToolCallID:    callID,
 			ToolCallName:  e.Name,
 			ArgumentsFull: e.Arguments,
 		}}
 	case "response.output_item.added":
 		if e.Item.Type == "function_call" {
+			callID := e.Item.CallID
+			name := e.Item.Name
+			if callID == "" || name == "" {
+				fallbackCallID, fallbackName := extractResponsesFunctionCallItem(ev.Data)
+				if callID == "" {
+					callID = fallbackCallID
+				}
+				if name == "" {
+					name = fallbackName
+				}
+			}
+			if callID == "" {
+				callID = e.Item.ID
+			}
+			if name == "" {
+				name = e.Name
+			}
 			return []NormalizedDelta{{
 				Type:          DeltaToolCallBegin,
 				ToolCallIndex: e.OutputIndex,
-				ToolCallID:    e.Item.ID,
-				ToolCallName:  e.Item.Name,
+				ToolCallID:    callID,
+				ToolCallName:  name,
 			}}
 		}
 	case "response.completed", "response.done":
@@ -197,6 +234,36 @@ func parseResponsesDelta(ev UnifiedEvent) []NormalizedDelta {
 	}
 
 	return nil
+}
+
+func extractResponsesFunctionCallItem(raw json.RawMessage) (string, string) {
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return "", ""
+	}
+	item, ok := root["item"].(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	if t, ok := item["type"].(string); ok && t != "function_call" {
+		return "", ""
+	}
+
+	var callID string
+	if v, ok := item["call_id"].(string); ok {
+		callID = v
+	} else if v, ok := item["id"].(string); ok {
+		callID = v
+	}
+
+	var name string
+	if v, ok := item["name"].(string); ok {
+		name = v
+	} else if v, ok := item["tool_name"].(string); ok {
+		name = v
+	}
+
+	return callID, name
 }
 
 // ---------------------------------------------------------------------------
@@ -285,9 +352,10 @@ type geminiChunk struct {
 	Candidates []struct {
 		Content struct {
 			Parts []struct {
-				Text         string    `json:"text"`
-				Thought      bool      `json:"thought"`
-				FunctionCall *geminiFC `json:"functionCall,omitempty"`
+				Text             string    `json:"text"`
+				Thought          bool      `json:"thought"`
+				FunctionCall     *geminiFC `json:"functionCall,omitempty"`
+				ThoughtSignature string    `json:"thoughtSignature"`
 			} `json:"parts"`
 		} `json:"content"`
 		FinishReason string `json:"finishReason"`
@@ -313,16 +381,30 @@ func parseGeminiDelta(ev UnifiedEvent) []NormalizedDelta {
 
 	for i, part := range cand.Content.Parts {
 		if part.FunctionCall != nil {
+			callID := fmt.Sprintf("gemini-%d", i)
+			callID = encodeGeminiToolCallID(callID, part.ThoughtSignature)
 			out = append(out, NormalizedDelta{
-				Type:          DeltaToolCallBegin,
-				ToolCallIndex: i,
-				ToolCallName:  part.FunctionCall.Name,
+				Type:              DeltaToolCallBegin,
+				ToolCallIndex:     i,
+				ToolCallID:        callID,
+				ToolCallName:      part.FunctionCall.Name,
+				ToolCallSignature: part.ThoughtSignature,
 			})
 			if len(part.FunctionCall.Args) > 0 {
+				args := string(part.FunctionCall.Args)
 				out = append(out, NormalizedDelta{
 					Type:           DeltaToolCallArgumentsDelta,
 					ToolCallIndex:  i,
-					ArgumentsDelta: string(part.FunctionCall.Args),
+					ToolCallID:     callID,
+					ArgumentsDelta: args,
+				})
+				out = append(out, NormalizedDelta{
+					Type:              DeltaToolCallDone,
+					ToolCallIndex:     i,
+					ToolCallID:        callID,
+					ToolCallName:      part.FunctionCall.Name,
+					ToolCallSignature: part.ThoughtSignature,
+					ArgumentsFull:     args,
 				})
 			}
 			continue

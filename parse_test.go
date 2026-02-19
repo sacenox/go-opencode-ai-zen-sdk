@@ -274,15 +274,18 @@ func TestParseGeminiThoughtThenText(t *testing.T) {
 func TestParseGeminiFunctionCall(t *testing.T) {
 	ev := makeEvent(EndpointModels, `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]}}]}`)
 	deltas := ParseNormalizedEvent(ev)
-	// Expect DeltaToolCallBegin + DeltaToolCallArgumentsDelta
-	if len(deltas) != 2 {
-		t.Fatalf("expected 2 deltas, got %d: %+v", len(deltas), deltas)
+	// Expect DeltaToolCallBegin + DeltaToolCallArgumentsDelta + DeltaToolCallDone
+	if len(deltas) != 3 {
+		t.Fatalf("expected 3 deltas, got %d: %+v", len(deltas), deltas)
 	}
 	if deltas[0].Type != DeltaToolCallBegin || deltas[0].ToolCallName != "get_weather" {
 		t.Fatalf("expected tool_call_begin with name get_weather, got %+v", deltas[0])
 	}
 	if deltas[1].Type != DeltaToolCallArgumentsDelta {
 		t.Fatalf("expected tool_call_arguments_delta, got %+v", deltas[1])
+	}
+	if deltas[2].Type != DeltaToolCallDone {
+		t.Fatalf("expected tool_call_done, got %+v", deltas[2])
 	}
 }
 
