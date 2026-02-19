@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -29,6 +30,13 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 		captures = append(captures, requestCapture{path: r.URL.Path, body: body})
 		mu.Unlock()
 
+		// Gemini requests go through startStream (SSE), so respond with a
+		// minimal SSE frame; all other endpoints return plain JSON.
+		if strings.HasPrefix(r.URL.Path, "/models/") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"ok\":true}\n\n"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -106,8 +114,8 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 		t.Fatalf("messages payload missing messages")
 	}
 
-	if captures[2].path != "/models/gemini-3-pro" {
-		t.Fatalf("expected /models/gemini-3-pro, got %s", captures[2].path)
+	if !strings.HasPrefix(captures[2].path, "/models/gemini-3-pro") {
+		t.Fatalf("expected /models/gemini-3-pro path, got %s", captures[2].path)
 	}
 	if _, ok := captures[2].body["contents"]; !ok {
 		t.Fatalf("gemini payload missing contents")

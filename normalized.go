@@ -31,9 +31,18 @@ type NormalizedReasoning struct {
 	BudgetTokens int
 }
 
+type NormalizedToolCall struct {
+	ID        string
+	Name      string
+	Arguments json.RawMessage
+}
+
 type NormalizedMessage struct {
-	Role    string
-	Content string
+	Role         string
+	Content      string
+	ToolCalls    []NormalizedToolCall // set on assistant messages that invoked tools
+	ToolCallID   string               // set on tool-result messages (role "tool")
+	FunctionName string               // set on tool-result messages (role "tool"): name of the called function; required by Gemini
 }
 
 type NormalizedRequest struct {
@@ -63,11 +72,35 @@ func (r NormalizedRequest) ToResponsesRequest() (*ResponsesRequest, error) {
 	if len(r.Messages) == 0 {
 		req.Input = ""
 	} else {
-		messages := make([]ResponsesInputMessage, 0, len(r.Messages))
+		items := make([]any, 0, len(r.Messages))
 		for _, m := range r.Messages {
-			messages = append(messages, ResponsesInputMessage(m))
+			// Tool result message → function_call_output item.
+			if strings.ToLower(strings.TrimSpace(m.Role)) == "tool" {
+				items = append(items, ResponsesFunctionCallOutput{
+					Type:   "function_call_output",
+					CallID: m.ToolCallID,
+					Output: m.Content,
+				})
+				continue
+			}
+			// Assistant message with tool calls → optional text item + function_call items.
+			if strings.ToLower(strings.TrimSpace(m.Role)) == "assistant" && len(m.ToolCalls) > 0 {
+				if strings.TrimSpace(m.Content) != "" {
+					items = append(items, ResponsesInputMessage{Role: m.Role, Content: m.Content})
+				}
+				for _, tc := range m.ToolCalls {
+					items = append(items, ResponsesFunctionCall{
+						Type:      "function_call",
+						CallID:    tc.ID,
+						Name:      tc.Name,
+						Arguments: string(tc.Arguments),
+					})
+				}
+				continue
+			}
+			items = append(items, ResponsesInputMessage{Role: m.Role, Content: m.Content})
 		}
-		req.Input = messages
+		req.Input = items
 	}
 
 	if r.Reasoning != nil && r.Reasoning.Effort != "" {
@@ -78,8 +111,10 @@ func (r NormalizedRequest) ToResponsesRequest() (*ResponsesRequest, error) {
 		req.Tools = make([]ResponsesTool, 0, len(r.Tools))
 		for _, t := range r.Tools {
 			req.Tools = append(req.Tools, ResponsesTool{
-				Type:     "function",
-				Function: ResponsesToolFunction(t),
+				Type:        "function",
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Parameters,
 			})
 		}
 	}
@@ -101,7 +136,21 @@ func (r NormalizedRequest) ToChatCompletionsRequest() (*ChatCompletionsRequest, 
 		messages = append(messages, ChatMessage{Role: "system", Content: r.System})
 	}
 	for _, m := range r.Messages {
-		messages = append(messages, ChatMessage(m))
+		cm := ChatMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		if len(m.ToolCalls) > 0 {
+			cm.ToolCalls = make([]ChatMessageToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				cm.ToolCalls = append(cm.ToolCalls, ChatMessageToolCall{
+					ID:   tc.ID,
+					Type: "function",
+					Function: ChatMessageToolCallFunc{
+						Name:      tc.Name,
+						Arguments: string(tc.Arguments),
+					},
+				})
+			}
+		}
+		messages = append(messages, cm)
 	}
 
 	req := &ChatCompletionsRequest{
@@ -196,12 +245,64 @@ func (r NormalizedRequest) ToMessagesRequest() (*MessagesRequest, error) {
 }
 
 func (r NormalizedRequest) ToGeminiRequest() (*GeminiRequest, error) {
+	// Build a call-id → function-name index from all assistant tool calls so
+	// that tool-result messages can have their FunctionName derived
+	// automatically when the caller did not set it explicitly.
+	callIDToName := make(map[string]string)
+	for _, m := range r.Messages {
+		if strings.ToLower(strings.TrimSpace(m.Role)) == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID != "" && tc.Name != "" {
+					callIDToName[tc.ID] = tc.Name
+				}
+			}
+		}
+	}
+
 	contents := make([]GeminiContent, 0, len(r.Messages))
 	for _, m := range r.Messages {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
+
+		// Tool result: role "tool" → user turn with functionResponse parts.
+		if role == "tool" {
+			name := m.FunctionName
+			if name == "" {
+				name = callIDToName[m.ToolCallID]
+			}
+			if name == "" {
+				return nil, errors.New("zen: tool result message is missing FunctionName (required by Gemini)")
+			}
+			contents = append(contents, GeminiContent{
+				Role: "user",
+				Parts: []GeminiPart{{
+					FunctionResponse: &GeminiFunctionResponse{
+						Name:     name,
+						Response: GeminiFunctionResponseBody{Output: m.Content},
+					},
+				}},
+			})
+			continue
+		}
+
 		if role == "assistant" {
 			role = "model"
 		}
+
+		// Assistant message with tool calls → model turn with functionCall parts.
+		if role == "model" && len(m.ToolCalls) > 0 {
+			parts := make([]GeminiPart, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				parts = append(parts, GeminiPart{
+					FunctionCall: &GeminiFunctionCall{
+						Name: tc.Name,
+						Args: tc.Arguments,
+					},
+				})
+			}
+			contents = append(contents, GeminiContent{Role: role, Parts: parts})
+			continue
+		}
+
 		contents = append(contents, GeminiContent{
 			Role:  role,
 			Parts: []GeminiPart{{Text: m.Content}},
@@ -312,6 +413,35 @@ func normalizeAnthropicMessages(system string, msgs []NormalizedMessage) (string
 				}
 				combinedSystem += m.Content
 			}
+			continue
+		}
+
+		// Tool result: role "tool" maps to a "user" message with a tool_result block.
+		if role == "tool" {
+			out = append(out, AnthropicMessage{
+				Role: "user",
+				Content: []AnthropicContentBlock{
+					{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content},
+				},
+			})
+			continue
+		}
+
+		// Assistant message with tool calls: emit content blocks of type "tool_use".
+		if role == "assistant" && len(m.ToolCalls) > 0 {
+			blocks := make([]AnthropicContentBlock, 0, len(m.ToolCalls)+1)
+			if strings.TrimSpace(m.Content) != "" {
+				blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				blocks = append(blocks, AnthropicContentBlock{
+					Type:  "tool_use",
+					ID:    tc.ID,
+					Name:  tc.Name,
+					Input: tc.Arguments,
+				})
+			}
+			out = append(out, AnthropicMessage{Role: "assistant", Content: blocks})
 			continue
 		}
 

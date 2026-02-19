@@ -19,12 +19,11 @@ type ResponsesReasoning struct {
 	Effort string `json:"effort,omitempty"`
 }
 
+// ResponsesTool defines a function tool in the Responses API flat format:
+// {"type":"function","name":...,"description":...,"parameters":...}
+// Note: this differs from Chat Completions which nests these under a "function" key.
 type ResponsesTool struct {
-	Type     string                `json:"type"`
-	Function ResponsesToolFunction `json:"function"`
-}
-
-type ResponsesToolFunction struct {
+	Type        string          `json:"type"`
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
@@ -33,6 +32,23 @@ type ResponsesToolFunction struct {
 type ResponsesInputMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// ResponsesFunctionCall represents an assistant function-call output item in
+// the Responses API input array.
+type ResponsesFunctionCall struct {
+	Type      string `json:"type"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ResponsesFunctionCallOutput represents a tool result item in the Responses
+// API input array.
+type ResponsesFunctionCallOutput struct {
+	Type   string `json:"type"`
+	CallID string `json:"call_id"`
+	Output string `json:"output"`
 }
 
 func (r ResponsesRequest) MarshalJSON() ([]byte, error) {

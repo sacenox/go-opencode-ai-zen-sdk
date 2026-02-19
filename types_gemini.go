@@ -17,8 +17,38 @@ type GeminiContent struct {
 	Parts []GeminiPart `json:"parts"`
 }
 
+type GeminiFunctionCall struct {
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+type GeminiFunctionResponse struct {
+	Name     string                     `json:"name"`
+	Response GeminiFunctionResponseBody `json:"response"`
+}
+
+// GeminiFunctionResponseBody is the value of functionResponse.response sent to
+// Gemini. When Content is non-nil it is used verbatim (allowing callers to
+// provide structured JSON). Otherwise a plain {"output": <Output>} object is
+// marshalled, which is the simplest form accepted by the API.
+type GeminiFunctionResponseBody struct {
+	Output  string          `json:"output,omitempty"`
+	Content json.RawMessage `json:"-"` // if set, marshalled as the entire response object
+}
+
+func (b GeminiFunctionResponseBody) MarshalJSON() ([]byte, error) {
+	if len(b.Content) > 0 {
+		return b.Content, nil
+	}
+	return json.Marshal(struct {
+		Output string `json:"output"`
+	}{Output: b.Output})
+}
+
 type GeminiPart struct {
-	Text string `json:"text,omitempty"`
+	Text             string                  `json:"text,omitempty"`
+	FunctionCall     *GeminiFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *GeminiFunctionResponse `json:"functionResponse,omitempty"`
 }
 
 type GeminiTool struct {

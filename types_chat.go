@@ -14,9 +14,22 @@ type ChatCompletionsRequest struct {
 	Extra       map[string]any
 }
 
+type ChatMessageToolCall struct {
+	ID       string                  `json:"id"`
+	Type     string                  `json:"type"`
+	Function ChatMessageToolCallFunc `json:"function"`
+}
+
+type ChatMessageToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string                `json:"role"`
+	Content    string                `json:"content,omitempty"`
+	ToolCalls  []ChatMessageToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string                `json:"tool_call_id,omitempty"`
 }
 
 type ChatReasoning struct {

@@ -53,6 +53,8 @@ func main() {
 		{"UnifiedStream", testUnifiedStream},
 		{"UnifiedCreateNormalized", testUnifiedCreateNormalized},
 		{"UnifiedStreamNormalized", testUnifiedStreamNormalized},
+		{"ToolHistory (normalized)", testToolHistoryNormalized},
+		{"ToolHistory (stream)", testToolHistoryNormalizedStream},
 	}
 
 	for _, s := range sections {
@@ -228,6 +230,69 @@ func testUnifiedStreamNormalized(ctx context.Context, client *zen.Client, modelI
 		Model:    modelID,
 		Messages: []zen.NormalizedMessage{{Role: "user", Content: "Say ok"}},
 		Stream:   true,
+	}
+	start := time.Now()
+	reqBody, _ := json.Marshal(req)
+
+	eventCh, errCh, err := client.UnifiedStreamNormalized(ctx, req)
+	return drainUnifiedStream(modelID, "auto", string(reqBody), eventCh, errCh, err, start)
+}
+
+// toolHistory returns a pre-built two-turn tool-use conversation:
+//
+//	user → assistant+tool_call → tool_result → user follow-up
+//
+// The model is expected to incorporate the tool result in its reply.
+func toolHistory() []zen.NormalizedMessage {
+	return []zen.NormalizedMessage{
+		{Role: "user", Content: "What is 3 + 4?"},
+		{
+			Role: "assistant",
+			ToolCalls: []zen.NormalizedToolCall{
+				{ID: "call_1", Name: "add", Arguments: json.RawMessage(`{"a":3,"b":4}`)},
+			},
+		},
+		{Role: "tool", Content: "7", ToolCallID: "call_1"},
+		{Role: "user", Content: "Thanks, what is the result doubled?"},
+	}
+}
+
+func testToolHistoryNormalized(ctx context.Context, client *zen.Client, modelID string) testResult {
+	req := zen.NormalizedRequest{
+		Model:    modelID,
+		System:   "You are a calculator assistant. When given a tool result, use it to answer the user.",
+		Messages: toolHistory(),
+		Tools: []zen.NormalizedTool{
+			{
+				Name:        "add",
+				Description: "Adds two numbers",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]}`),
+			},
+		},
+	}
+	start := time.Now()
+	reqBody, _ := json.Marshal(req)
+
+	resp, err := client.UnifiedCreateNormalized(ctx, req)
+	if err != nil {
+		return makeResult(modelID, "auto", false, string(reqBody), "", err, time.Since(start))
+	}
+	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), truncate(string(resp.Body), 100), nil, time.Since(start))
+}
+
+func testToolHistoryNormalizedStream(ctx context.Context, client *zen.Client, modelID string) testResult {
+	req := zen.NormalizedRequest{
+		Model:    modelID,
+		System:   "You are a calculator assistant. When given a tool result, use it to answer the user.",
+		Messages: toolHistory(),
+		Tools: []zen.NormalizedTool{
+			{
+				Name:        "add",
+				Description: "Adds two numbers",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]}`),
+			},
+		},
+		Stream: true,
 	}
 	start := time.Now()
 	reqBody, _ := json.Marshal(req)
