@@ -16,7 +16,8 @@ type ResponsesRequest struct {
 }
 
 type ResponsesReasoning struct {
-	Effort string `json:"effort,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // ResponsesTool defines a function tool in the Responses API flat format:
@@ -30,8 +31,13 @@ type ResponsesTool struct {
 }
 
 type ResponsesInputMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string                  `json:"role"`
+	Content []ResponsesInputContent `json:"content"`
+}
+
+type ResponsesInputContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
 // ResponsesFunctionCall represents an assistant function-call output item in

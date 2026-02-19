@@ -77,7 +77,9 @@ type GeminiGenerationConfig struct {
 }
 
 type GeminiThinkingConfig struct {
-	ThinkingLevel string `json:"thinkingLevel,omitempty"`
+	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
+	IncludeThoughts *bool  `json:"includeThoughts,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
 }
 
 func (r GeminiRequest) MarshalJSON() ([]byte, error) {

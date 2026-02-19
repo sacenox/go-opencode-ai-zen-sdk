@@ -66,8 +66,8 @@ func TestMapEffortToBudget(t *testing.T) {
 }
 
 func TestMapEffortToThinkingLevel(t *testing.T) {
-	if mapEffortToThinkingLevel("medium") != "MEDIUM" {
-		t.Fatalf("expected MEDIUM level")
+	if mapEffortToThinkingLevel("medium") != "medium" {
+		t.Fatalf("expected medium level")
 	}
 	if mapEffortToThinkingLevel("unknown") != "" {
 		t.Fatalf("expected empty level")

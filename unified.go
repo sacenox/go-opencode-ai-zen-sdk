@@ -17,21 +17,6 @@ const (
 	EndpointModels          EndpointType = "models"
 )
 
-type UnifiedRequest struct {
-	Model    string
-	Endpoint EndpointType
-	Method   string
-	Body     any
-	Raw      json.RawMessage
-	Stream   bool
-}
-
-type UnifiedResponse struct {
-	Endpoint EndpointType
-	Body     json.RawMessage
-	Header   map[string][]string
-}
-
 type UnifiedEvent struct {
 	Endpoint EndpointType
 	Event    string
@@ -39,208 +24,84 @@ type UnifiedEvent struct {
 	Raw      string
 }
 
-func (c *Client) UnifiedCreate(ctx context.Context, req UnifiedRequest) (*UnifiedResponse, error) {
-	if req.Stream {
-		return nil, errors.New("zen: use UnifiedStream for streaming requests")
-	}
-	endpoint, path, method, err := c.resolveEndpoint(req)
-	if err != nil {
-		return nil, err
-	}
-
-	// Gemini model endpoints require the SSE path even for non-streaming requests;
-	// delegate to CreateModelContent which handles the SSE collect-last-chunk pattern.
-	if endpoint == EndpointModels && strings.TrimSpace(req.Model) != "" {
-		data, err := c.CreateModelContent(ctx, req.Model, req.Body, req.Raw)
-		if err != nil {
-			return nil, err
-		}
-		return &UnifiedResponse{Endpoint: endpoint, Body: data}, nil
-	}
-
-	var payload []byte
-	if req.Body != nil || req.Raw != nil || strings.ToUpper(method) != "GET" {
-		var err error
-		payload, err = jsonBody(req.Body, req.Raw)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	data, header, err := c.doRequest(ctx, method, path, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	return &UnifiedResponse{
-		Endpoint: endpoint,
-		Body:     json.RawMessage(data),
-		Header:   header,
-	}, nil
-}
-
-func (c *Client) UnifiedStream(ctx context.Context, req UnifiedRequest) (<-chan UnifiedEvent, <-chan error, error) {
-	if !req.Stream {
-		return nil, nil, errors.New("zen: Stream must be true for UnifiedStream")
-	}
-
-	endpoint, path, method, err := c.resolveEndpoint(req)
+// StreamEvents is the unified streaming API. It routes the request based on
+// the normalized model id and returns raw SSE events with the resolved endpoint.
+func (c *Client) StreamEvents(ctx context.Context, req NormalizedRequest) (<-chan UnifiedEvent, <-chan error, error) {
+	req.Model = stripOpencodePrefix(req.Model)
+	endpoint, path, err := resolveStreamEndpoint(req)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Gemini model endpoints require the SSE URL scheme; delegate to StreamModelContent.
-	if endpoint == EndpointModels && strings.TrimSpace(req.Model) != "" {
-		evCh, errCh, err := c.StreamModelContent(ctx, req.Model, req.Body, req.Raw)
+	req.Stream = true
+
+	var body any
+	switch endpoint {
+	case EndpointResponses:
+		payload, err := req.ToResponsesRequest()
 		if err != nil {
 			return nil, nil, err
 		}
-		events := make(chan UnifiedEvent)
-		errs := make(chan error, 1)
-		go func() {
-			defer close(events)
-			defer close(errs)
-			for ev := range evCh {
-				events <- UnifiedEvent{
-					Endpoint: endpoint,
-					Event:    ev.Event,
-					Data:     ev.Data,
-					Raw:      ev.Raw,
-				}
-			}
-			if streamErr := <-errCh; streamErr != nil {
-				errs <- streamErr
-			}
-		}()
-		return events, errs, nil
-	}
-
-	var payload []byte
-	if req.Body != nil || req.Raw != nil || strings.ToUpper(method) != "GET" {
-		var err error
-		payload, err = jsonBody(req.Body, req.Raw)
+		body = payload
+	case EndpointMessages:
+		payload, err := req.ToMessagesRequest()
 		if err != nil {
 			return nil, nil, err
 		}
+		body = payload
+	case EndpointChatCompletions:
+		payload, err := req.ToChatCompletionsRequest()
+		if err != nil {
+			return nil, nil, err
+		}
+		body = payload
+	case EndpointModels:
+		payload, err := req.ToGeminiRequest()
+		if err != nil {
+			return nil, nil, err
+		}
+		body = payload
+	default:
+		return nil, nil, errors.New("zen: unsupported endpoint")
 	}
 
-	events := make(chan UnifiedEvent)
-	errs := make(chan error, 1)
+	payload, err := jsonBody(body, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	stream, err := c.startStream(ctx, endpoint, "POST", path, payload)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	out := make(chan UnifiedEvent)
+	errCh := make(chan error, 1)
 
 	go func() {
-		defer close(events)
-		defer close(errs)
-
-		stream, err := c.startStream(ctx, method, path, payload)
-		if err != nil {
-			errs <- err
-			return
-		}
+		defer close(out)
+		defer close(errCh)
 		defer func() { _ = stream.Close() }()
 
 		for ev := range stream.Events {
-			events <- UnifiedEvent{
+			out <- UnifiedEvent{
 				Endpoint: endpoint,
 				Event:    ev.Event,
 				Data:     ev.Data,
 				Raw:      ev.Raw,
 			}
 		}
-
 		if stream.Err != nil {
-			errs <- stream.Err
+			errCh <- stream.Err
 		}
 	}()
 
-	return events, errs, nil
+	return out, errCh, nil
 }
 
-func (c *Client) UnifiedCreateNormalized(ctx context.Context, req NormalizedRequest) (*UnifiedResponse, error) {
-	if req.Stream {
-		return nil, errors.New("zen: use UnifiedStreamNormalized for streaming requests")
-	}
-
-	endpoint := req.Endpoint
-	if endpoint == EndpointAuto {
-		endpoint = routeForModel(req.Model)
-	}
-
-	switch endpoint {
-	case EndpointResponses:
-		body, err := req.ToResponsesRequest()
-		if err != nil {
-			return nil, err
-		}
-		return c.UnifiedCreate(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body})
-	case EndpointMessages:
-		body, err := req.ToMessagesRequest()
-		if err != nil {
-			return nil, err
-		}
-		return c.UnifiedCreate(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body})
-	case EndpointChatCompletions:
-		body, err := req.ToChatCompletionsRequest()
-		if err != nil {
-			return nil, err
-		}
-		return c.UnifiedCreate(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body})
-	case EndpointModels:
-		body, err := req.ToGeminiRequest()
-		if err != nil {
-			return nil, err
-		}
-		return c.UnifiedCreate(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body})
-	default:
-		return nil, errors.New("zen: unsupported endpoint")
-	}
-}
-
-func (c *Client) UnifiedStreamNormalized(ctx context.Context, req NormalizedRequest) (<-chan UnifiedEvent, <-chan error, error) {
-	if !req.Stream {
-		return nil, nil, errors.New("zen: Stream must be true for UnifiedStreamNormalized")
-	}
-
-	endpoint := req.Endpoint
-	if endpoint == EndpointAuto {
-		endpoint = routeForModel(req.Model)
-	}
-
-	switch endpoint {
-	case EndpointResponses:
-		body, err := req.ToResponsesRequest()
-		if err != nil {
-			return nil, nil, err
-		}
-		return c.UnifiedStream(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body, Stream: true})
-	case EndpointMessages:
-		body, err := req.ToMessagesRequest()
-		if err != nil {
-			return nil, nil, err
-		}
-		return c.UnifiedStream(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body, Stream: true})
-	case EndpointChatCompletions:
-		body, err := req.ToChatCompletionsRequest()
-		if err != nil {
-			return nil, nil, err
-		}
-		return c.UnifiedStream(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body, Stream: true})
-	case EndpointModels:
-		body, err := req.ToGeminiRequest()
-		if err != nil {
-			return nil, nil, err
-		}
-		return c.UnifiedStream(ctx, UnifiedRequest{Model: req.Model, Endpoint: endpoint, Body: body, Stream: true})
-	default:
-		return nil, nil, errors.New("zen: unsupported endpoint")
-	}
-}
-
-// UnifiedStreamNormalizedParsed is like UnifiedStreamNormalized but parses each
-// raw SSE event into one or more NormalizedDelta values before yielding them.
-// This is the high-level streaming API: callers do not need to know the wire
-// format of the underlying endpoint.
-func (c *Client) UnifiedStreamNormalizedParsed(ctx context.Context, req NormalizedRequest) (<-chan NormalizedDelta, <-chan error, error) {
-	evCh, errCh, err := c.UnifiedStreamNormalized(ctx, req)
+// Stream parses unified SSE events into normalized deltas.
+func (c *Client) Stream(ctx context.Context, req NormalizedRequest) (<-chan NormalizedDelta, <-chan error, error) {
+	evCh, errCh, err := c.StreamEvents(ctx, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -264,35 +125,32 @@ func (c *Client) UnifiedStreamNormalizedParsed(ctx context.Context, req Normaliz
 	return out, outErr, nil
 }
 
-func (c *Client) resolveEndpoint(req UnifiedRequest) (EndpointType, string, string, error) {
+func resolveStreamEndpoint(req NormalizedRequest) (EndpointType, string, error) {
 	endpoint := req.Endpoint
 	if endpoint == EndpointAuto {
 		endpoint = routeForModel(req.Model)
 	}
-	method := req.Method
-	if method == "" {
-		method = "POST"
-	}
 
 	switch endpoint {
 	case EndpointResponses:
-		return endpoint, "/responses", method, nil
+		return endpoint, "/responses", nil
 	case EndpointMessages:
-		return endpoint, "/messages", method, nil
+		return endpoint, "/messages", nil
 	case EndpointChatCompletions:
-		return endpoint, "/chat/completions", method, nil
+		return endpoint, "/chat/completions", nil
 	case EndpointModels:
-		if strings.TrimSpace(req.Model) == "" {
-			return endpoint, "/models", "GET", nil
+		model := strings.TrimSpace(stripOpencodePrefix(req.Model))
+		if model == "" {
+			return endpoint, "", errors.New("zen: model is required for model streaming")
 		}
-		return endpoint, "/models/" + req.Model, method, nil
+		return endpoint, "/models/" + model + ":streamGenerateContent?alt=sse", nil
 	default:
-		return endpoint, "", "", errors.New("zen: unsupported endpoint")
+		return endpoint, "", errors.New("zen: unsupported endpoint")
 	}
 }
 
 func routeForModel(model string) EndpointType {
-	m := strings.ToLower(strings.TrimSpace(model))
+	m := normalizeModelID(model)
 	switch {
 	case strings.HasPrefix(m, "gpt-"):
 		return EndpointResponses
@@ -303,4 +161,20 @@ func routeForModel(model string) EndpointType {
 	default:
 		return EndpointChatCompletions
 	}
+}
+
+func normalizeModelID(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(m, "opencode/") {
+		m = strings.TrimPrefix(m, "opencode/")
+	}
+	return m
+}
+
+func stripOpencodePrefix(model string) string {
+	m := strings.TrimSpace(model)
+	if strings.HasPrefix(strings.ToLower(m), "opencode/") {
+		return m[len("opencode/"):]
+	}
+	return m
 }

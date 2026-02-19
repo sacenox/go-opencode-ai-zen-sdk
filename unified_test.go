@@ -16,7 +16,7 @@ type requestCapture struct {
 	body map[string]any
 }
 
-func TestUnifiedCreateNormalizedRouting(t *testing.T) {
+func TestStreamEventsRouting(t *testing.T) {
 	var mu sync.Mutex
 	var captures []requestCapture
 
@@ -30,15 +30,8 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 		captures = append(captures, requestCapture{path: r.URL.Path, body: body})
 		mu.Unlock()
 
-		// Gemini requests go through startStream (SSE), so respond with a
-		// minimal SSE frame; all other endpoints return plain JSON.
-		if strings.HasPrefix(r.URL.Path, "/models/") {
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: {\"ok\":true}\n\n"))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"ok\":true}\n\n"))
 	}))
 	defer server.Close()
 
@@ -49,7 +42,7 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err = client.UnifiedCreateNormalized(ctx, NormalizedRequest{
+	_, err = drainStreamEvents(ctx, client, NormalizedRequest{
 		Model:  "gpt-5.2-codex",
 		System: "system",
 		Messages: []NormalizedMessage{
@@ -60,7 +53,7 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 		t.Fatalf("responses request error: %v", err)
 	}
 
-	_, err = client.UnifiedCreateNormalized(ctx, NormalizedRequest{
+	_, err = drainStreamEvents(ctx, client, NormalizedRequest{
 		Model:  "claude-sonnet-4-6",
 		System: "system",
 		Messages: []NormalizedMessage{
@@ -71,7 +64,7 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 		t.Fatalf("messages request error: %v", err)
 	}
 
-	_, err = client.UnifiedCreateNormalized(ctx, NormalizedRequest{
+	_, err = drainStreamEvents(ctx, client, NormalizedRequest{
 		Model:  "gemini-3-pro",
 		System: "system",
 		Messages: []NormalizedMessage{
@@ -82,7 +75,7 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 		t.Fatalf("gemini request error: %v", err)
 	}
 
-	_, err = client.UnifiedCreateNormalized(ctx, NormalizedRequest{
+	_, err = drainStreamEvents(ctx, client, NormalizedRequest{
 		Model:  "glm-5",
 		System: "system",
 		Messages: []NormalizedMessage{
@@ -127,4 +120,20 @@ func TestUnifiedCreateNormalizedRouting(t *testing.T) {
 	if _, ok := captures[3].body["messages"]; !ok {
 		t.Fatalf("chat payload missing messages")
 	}
+}
+
+func drainStreamEvents(ctx context.Context, client *Client, req NormalizedRequest) ([]UnifiedEvent, error) {
+	events, errCh, err := client.StreamEvents(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []UnifiedEvent
+	for ev := range events {
+		out = append(out, ev)
+	}
+	if streamErr := <-errCh; streamErr != nil {
+		return out, streamErr
+	}
+	return out, nil
 }

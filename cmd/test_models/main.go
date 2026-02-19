@@ -41,23 +41,17 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	var results []testResult
-
 	sections := []struct {
 		name string
 		fn   func(context.Context, *zen.Client, string) testResult
 	}{
-		{"Non-Streaming", testModel},
-		{"Streaming", testModelStream},
-		{"UnifiedCreate", testUnifiedCreate},
-		{"UnifiedStream", testUnifiedStream},
-		{"UnifiedCreateNormalized", testUnifiedCreateNormalized},
-		{"UnifiedStreamNormalized", testUnifiedStreamNormalized},
-		{"ToolHistory (normalized)", testToolHistoryNormalized},
-		{"ToolHistory (stream)", testToolHistoryNormalizedStream},
-		{"Reasoning (normalized)", testReasoningNormalized},
-		{"Reasoning (stream)", testReasoningNormalizedStream},
+		{"StreamEvents", testStreamEvents},
+		{"StreamParsed", testStreamParsed},
+		{"ToolHistory (stream)", testToolHistoryStream},
+		{"Reasoning (stream)", testReasoningStream},
 	}
+
+	var results []testResult
 
 	for _, s := range sections {
 		fmt.Printf("=== %s ===\n", s.name)
@@ -78,173 +72,60 @@ func main() {
 	fmt.Printf("=== Summary: %d/%d passed ===\n", successCount, len(results))
 	for _, r := range results {
 		if !r.Success {
-			mode := "non-stream"
-			if r.Stream {
-				mode = "stream"
-			}
-			fmt.Printf("  FAILED [%s] %s (%s): %s\n", mode, r.Model, r.Endpoint, r.Error)
+			fmt.Printf("  FAILED [stream] %s (%s): %s\n", r.Model, r.Endpoint, r.Error)
 		}
 	}
 }
 
-func testModel(ctx context.Context, client *zen.Client, modelID string) testResult {
+func testStreamEvents(ctx context.Context, client *zen.Client, modelID string) testResult {
+	start := time.Now()
 	endpoint := routeForModel(modelID)
-	start := time.Now()
-
-	var resp json.RawMessage
-	var err error
-	var reqBody []byte
-
-	switch endpoint {
-	case "responses":
-		body := map[string]any{"model": modelID, "input": "Say ok"}
-		reqBody, _ = json.Marshal(body)
-		resp, err = client.CreateResponse(ctx, body, nil)
-	case "messages":
-		body := map[string]any{
-			"model":      modelID,
-			"messages":   []map[string]string{{"role": "user", "content": "Say ok"}},
-			"max_tokens": 64,
-		}
-		reqBody, _ = json.Marshal(body)
-		resp, err = client.CreateMessage(ctx, body, nil)
-	case "models":
-		req := zen.GeminiRequest{
-			Contents: []zen.GeminiContent{{Role: "user", Parts: []zen.GeminiPart{{Text: "Say ok"}}}},
-		}
-		reqBody, _ = json.Marshal(req)
-		resp, err = client.CreateModelContentTyped(ctx, modelID, req)
-	default:
-		body := map[string]any{
-			"model":    modelID,
-			"messages": []map[string]string{{"role": "user", "content": "Say ok"}},
-		}
-		reqBody, _ = json.Marshal(body)
-		resp, err = client.CreateChatCompletion(ctx, body, nil)
+	req := zen.NormalizedRequest{
+		Model:    modelID,
+		Messages: []zen.NormalizedMessage{{Role: "user", Content: "Say ok"}},
 	}
+	reqBody, _ := json.Marshal(req)
 
-	return makeResult(modelID, endpoint, false, string(reqBody), string(resp), err, time.Since(start))
-}
-
-func testModelStream(ctx context.Context, client *zen.Client, modelID string) testResult {
-	endpoint := routeForModel(modelID)
-	start := time.Now()
-
-	var eventCh <-chan zen.StreamEvent
-	var errCh <-chan error
-	var err error
-	var reqBody []byte
-
-	switch endpoint {
-	case "responses":
-		body := map[string]any{"model": modelID, "input": "Say ok", "stream": true}
-		reqBody, _ = json.Marshal(body)
-		eventCh, errCh, err = client.StreamResponse(ctx, body, nil)
-	case "messages":
-		body := map[string]any{
-			"model":      modelID,
-			"messages":   []map[string]string{{"role": "user", "content": "Say ok"}},
-			"max_tokens": 64,
-			"stream":     true,
-		}
-		reqBody, _ = json.Marshal(body)
-		eventCh, errCh, err = client.StreamMessage(ctx, body, nil)
-	case "models":
-		req := zen.GeminiRequest{
-			Contents: []zen.GeminiContent{{Role: "user", Parts: []zen.GeminiPart{{Text: "Say ok"}}}},
-		}
-		reqBody, _ = json.Marshal(req)
-		eventCh, errCh, err = client.StreamModelContentTyped(ctx, modelID, req)
-	default:
-		body := map[string]any{
-			"model":    modelID,
-			"messages": []map[string]string{{"role": "user", "content": "Say ok"}},
-			"stream":   true,
-		}
-		reqBody, _ = json.Marshal(body)
-		eventCh, errCh, err = client.StreamChatCompletion(ctx, body, nil)
-	}
-
-	return drainStream(modelID, endpoint, string(reqBody), eventCh, errCh, err, start)
-}
-
-func unifiedBody(modelID string) (any, string) {
-	m := strings.ToLower(strings.TrimSpace(modelID))
-	switch {
-	case strings.HasPrefix(m, "gpt-"):
-		return map[string]any{"model": modelID, "input": "Say ok"}, "responses"
-	case strings.HasPrefix(m, "claude-"):
-		return map[string]any{
-			"model":      modelID,
-			"messages":   []map[string]string{{"role": "user", "content": "Say ok"}},
-			"max_tokens": 64,
-		}, "messages"
-	case strings.HasPrefix(m, "gemini-"):
-		return zen.GeminiRequest{
-			Contents: []zen.GeminiContent{{Role: "user", Parts: []zen.GeminiPart{{Text: "Say ok"}}}},
-		}, "models"
-	default:
-		return map[string]any{
-			"model":    modelID,
-			"messages": []map[string]string{{"role": "user", "content": "Say ok"}},
-		}, "chat_completions"
-	}
-}
-
-func testUnifiedCreate(ctx context.Context, client *zen.Client, modelID string) testResult {
-	body, endpoint := unifiedBody(modelID)
-	start := time.Now()
-	reqBody, _ := json.Marshal(body)
-
-	resp, err := client.UnifiedCreate(ctx, zen.UnifiedRequest{Model: modelID, Body: body})
-	if err != nil {
-		return makeResult(modelID, endpoint, false, string(reqBody), "", err, time.Since(start))
-	}
-	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), truncate(string(resp.Body), 100), nil, time.Since(start))
-}
-
-func testUnifiedStream(ctx context.Context, client *zen.Client, modelID string) testResult {
-	body, endpoint := unifiedBody(modelID)
-	start := time.Now()
-	reqBody, _ := json.Marshal(body)
-
-	eventCh, errCh, err := client.UnifiedStream(ctx, zen.UnifiedRequest{Model: modelID, Body: body, Stream: true})
+	eventCh, errCh, err := client.StreamEvents(ctx, req)
 	return drainUnifiedStream(modelID, endpoint, string(reqBody), eventCh, errCh, err, start)
 }
 
-func testUnifiedCreateNormalized(ctx context.Context, client *zen.Client, modelID string) testResult {
+func testStreamParsed(ctx context.Context, client *zen.Client, modelID string) testResult {
+	start := time.Now()
+	endpoint := routeForModel(modelID)
 	req := zen.NormalizedRequest{
 		Model:    modelID,
 		Messages: []zen.NormalizedMessage{{Role: "user", Content: "Say ok"}},
 	}
-	start := time.Now()
 	reqBody, _ := json.Marshal(req)
 
-	resp, err := client.UnifiedCreateNormalized(ctx, req)
+	deltaCh, errCh, err := client.Stream(ctx, req)
 	if err != nil {
-		return makeResult(modelID, "auto", false, string(reqBody), "", err, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start))
 	}
-	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), truncate(string(resp.Body), 100), nil, time.Since(start))
-}
 
-func testUnifiedStreamNormalized(ctx context.Context, client *zen.Client, modelID string) testResult {
-	req := zen.NormalizedRequest{
-		Model:    modelID,
-		Messages: []zen.NormalizedMessage{{Role: "user", Content: "Say ok"}},
-		Stream:   true,
+	var textBuf, reasoningBuf strings.Builder
+	var count int
+	for d := range deltaCh {
+		count++
+		switch d.Type {
+		case zen.DeltaText:
+			textBuf.WriteString(d.Content)
+		case zen.DeltaReasoning:
+			reasoningBuf.WriteString(d.Content)
+		}
 	}
-	start := time.Now()
-	reqBody, _ := json.Marshal(req)
+	if streamErr := <-errCh; streamErr != nil {
+		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start))
+	}
 
-	eventCh, errCh, err := client.UnifiedStreamNormalized(ctx, req)
-	return drainUnifiedStream(modelID, "auto", string(reqBody), eventCh, errCh, err, start)
+	resp := fmt.Sprintf("deltas=%d text=%s reasoning=%s", count, truncate(textBuf.String(), 40), truncate(reasoningBuf.String(), 40))
+	return makeResult(modelID, endpoint, true, string(reqBody), resp, nil, time.Since(start))
 }
 
 // toolHistory returns a pre-built two-turn tool-use conversation:
 //
 //	user → assistant+tool_call → tool_result → user follow-up
-//
-// The model is expected to incorporate the tool result in its reply.
 func toolHistory() []zen.NormalizedMessage {
 	return []zen.NormalizedMessage{
 		{Role: "user", Content: "What is 3 + 4?"},
@@ -259,7 +140,9 @@ func toolHistory() []zen.NormalizedMessage {
 	}
 }
 
-func testToolHistoryNormalized(ctx context.Context, client *zen.Client, modelID string) testResult {
+func testToolHistoryStream(ctx context.Context, client *zen.Client, modelID string) testResult {
+	start := time.Now()
+	endpoint := routeForModel(modelID)
 	req := zen.NormalizedRequest{
 		Model:    modelID,
 		System:   "You are a calculator assistant. When given a tool result, use it to answer the user.",
@@ -272,80 +155,46 @@ func testToolHistoryNormalized(ctx context.Context, client *zen.Client, modelID 
 			},
 		},
 	}
-	start := time.Now()
 	reqBody, _ := json.Marshal(req)
 
-	resp, err := client.UnifiedCreateNormalized(ctx, req)
+	deltaCh, errCh, err := client.Stream(ctx, req)
 	if err != nil {
-		return makeResult(modelID, "auto", false, string(reqBody), "", err, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start))
 	}
-	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), truncate(string(resp.Body), 100), nil, time.Since(start))
+
+	var textBuf strings.Builder
+	var count int
+	for d := range deltaCh {
+		count++
+		if d.Type == zen.DeltaText {
+			textBuf.WriteString(d.Content)
+		}
+	}
+	if streamErr := <-errCh; streamErr != nil {
+		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start))
+	}
+
+	resp := fmt.Sprintf("deltas=%d text=%s", count, truncate(textBuf.String(), 60))
+	return makeResult(modelID, endpoint, true, string(reqBody), resp, nil, time.Since(start))
 }
 
-func testToolHistoryNormalizedStream(ctx context.Context, client *zen.Client, modelID string) testResult {
-	req := zen.NormalizedRequest{
-		Model:    modelID,
-		System:   "You are a calculator assistant. When given a tool result, use it to answer the user.",
-		Messages: toolHistory(),
-		Tools: []zen.NormalizedTool{
-			{
-				Name:        "add",
-				Description: "Adds two numbers",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}},"required":["a","b"]}`),
-			},
-		},
-		Stream: true,
-	}
+func testReasoningStream(ctx context.Context, client *zen.Client, modelID string) testResult {
 	start := time.Now()
-	reqBody, _ := json.Marshal(req)
-
-	eventCh, errCh, err := client.UnifiedStreamNormalized(ctx, req)
-	return drainUnifiedStream(modelID, "auto", string(reqBody), eventCh, errCh, err, start)
-}
-
-func testReasoningNormalized(ctx context.Context, client *zen.Client, modelID string) testResult {
+	endpoint := routeForModel(modelID)
 	req := zen.NormalizedRequest{
 		Model:     modelID,
 		Messages:  []zen.NormalizedMessage{{Role: "user", Content: "What is 2 + 2? Think step by step."}},
 		Reasoning: &zen.NormalizedReasoning{Effort: "low"},
 	}
-	start := time.Now()
 	reqBody, _ := json.Marshal(req)
 
-	resp, err := client.UnifiedCreateNormalized(ctx, req)
+	deltaCh, errCh, err := client.Stream(ctx, req)
 	if err != nil {
-		return makeResult(modelID, "auto", false, string(reqBody), "", err, time.Since(start))
-	}
-	// Parse the response body to check for reasoning content.
-	hasReasoning := responseHasReasoning(resp.Body)
-	summary := truncate(string(resp.Body), 100)
-	if !hasReasoning {
-		return makeResult(modelID, string(resp.Endpoint), false, string(reqBody),
-			"no reasoning content in response: "+summary,
-			fmt.Errorf("model %s: response contained no reasoning/thinking content", modelID),
-			time.Since(start))
-	}
-	return makeResult(modelID, string(resp.Endpoint), false, string(reqBody), summary, nil, time.Since(start))
-}
-
-func testReasoningNormalizedStream(ctx context.Context, client *zen.Client, modelID string) testResult {
-	req := zen.NormalizedRequest{
-		Model:     modelID,
-		Messages:  []zen.NormalizedMessage{{Role: "user", Content: "What is 2 + 2? Think step by step."}},
-		Reasoning: &zen.NormalizedReasoning{Effort: "low"},
-		Stream:    true,
-	}
-	start := time.Now()
-	reqBody, _ := json.Marshal(req)
-
-	deltaCh, errCh, err := client.UnifiedStreamNormalizedParsed(ctx, req)
-	if err != nil {
-		return makeResult(modelID, "auto", true, string(reqBody), "", err, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start))
 	}
 
 	var textBuf, reasoningBuf strings.Builder
 	var deltaCount int
-	var resolvedEndpoint string
 	for d := range deltaCh {
 		deltaCount++
 		switch d.Type {
@@ -356,61 +205,21 @@ func testReasoningNormalizedStream(ctx context.Context, client *zen.Client, mode
 		}
 	}
 	if streamErr := <-errCh; streamErr != nil {
-		return makeResult(modelID, "auto", true, string(reqBody), "", streamErr, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start))
 	}
-	_ = resolvedEndpoint
 
 	if reasoningBuf.Len() == 0 {
-		return makeResult(modelID, "auto", true, string(reqBody),
+		return makeResult(modelID, endpoint, true, string(reqBody),
 			fmt.Sprintf("deltas=%d text=%s", deltaCount, truncate(textBuf.String(), 60)),
 			fmt.Errorf("model %s: stream contained no reasoning/thinking deltas", modelID),
 			time.Since(start))
 	}
-	return makeResult(modelID, "auto", true, string(reqBody),
+	return makeResult(modelID, endpoint, true, string(reqBody),
 		fmt.Sprintf("deltas=%d reasoning=%s text=%s",
 			deltaCount,
 			truncate(reasoningBuf.String(), 40),
 			truncate(textBuf.String(), 40)),
 		nil, time.Since(start))
-}
-
-// responseHasReasoning checks whether a raw JSON response body from any endpoint
-// contains reasoning or thinking content.
-func responseHasReasoning(body json.RawMessage) bool {
-	// Generic scan: look for non-empty reasoning/thinking fields across all formats.
-	// chat_completions: choices[].message.reasoning_content
-	// responses: output[].content[].type == "reasoning"
-	// messages: content[].type == "thinking"
-	// gemini: candidates[].content.parts[].thought == true
-	var v map[string]json.RawMessage
-	if err := json.Unmarshal(body, &v); err != nil {
-		return false
-	}
-	raw := string(body)
-	return strings.Contains(raw, `"reasoning_content"`) ||
-		strings.Contains(raw, `"thinking"`) ||
-		strings.Contains(raw, `"thought":true`) ||
-		strings.Contains(raw, `"type":"reasoning"`) ||
-		strings.Contains(raw, `"type":"thinking"`)
-}
-
-// drainStream consumes a StreamEvent channel and builds a testResult.
-func drainStream(modelID, endpoint, reqBody string, eventCh <-chan zen.StreamEvent, errCh <-chan error, initErr error, start time.Time) testResult {
-	if initErr != nil {
-		return makeResult(modelID, endpoint, true, reqBody, "", initErr, time.Since(start))
-	}
-	var count int
-	var last string
-	for ev := range eventCh {
-		count++
-		if len(ev.Data) > 0 {
-			last = string(ev.Data)
-		}
-	}
-	if err := <-errCh; err != nil {
-		return makeResult(modelID, endpoint, true, reqBody, "", err, time.Since(start))
-	}
-	return makeResult(modelID, endpoint, true, reqBody, fmt.Sprintf("events=%d last=%s", count, truncate(last, 80)), nil, time.Since(start))
 }
 
 // drainUnifiedStream consumes a UnifiedEvent channel and builds a testResult.
@@ -456,6 +265,9 @@ func makeResult(modelID, endpoint string, stream bool, req, resp string, err err
 
 func routeForModel(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(m, "opencode/") {
+		m = strings.TrimPrefix(m, "opencode/")
+	}
 	switch {
 	case strings.HasPrefix(m, "gpt-"):
 		return "responses"
@@ -473,10 +285,7 @@ func printResult(r testResult) {
 	if !r.Success {
 		status = "✗"
 	}
-	mode := "non-stream"
-	if r.Stream {
-		mode = "stream"
-	}
+	mode := "stream"
 	fmt.Printf("  %s %-25s [%-15s] [%-10s] %v\n", status, r.Model, r.Endpoint, mode, r.Latency)
 }
 

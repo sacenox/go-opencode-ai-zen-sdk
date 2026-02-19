@@ -18,7 +18,7 @@ var retryableStatus = map[int]bool{
 	http.StatusGatewayTimeout:      true,
 }
 
-func (c *Client) doRequest(ctx context.Context, method, path string, body []byte) ([]byte, http.Header, error) {
+func (c *Client) doRequest(ctx context.Context, method, path string, body []byte, endpoint EndpointType, forceAllAuth bool) ([]byte, http.Header, error) {
 	url := joinURL(c.cfg.BaseURL, path)
 	if body == nil {
 		body = []byte{}
@@ -36,18 +36,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body []byte
 			return nil, nil, err
 		}
 
-		if len(body) > 0 {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		switch {
-		case strings.HasPrefix(path, "/messages"):
-			req.Header.Set("x-api-key", c.cfg.APIKey)
-		case strings.HasPrefix(path, "/models/") && strings.Contains(path, "gemini"):
-			req.Header.Set("x-goog-api-key", c.cfg.APIKey)
-		default:
-			req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-		}
-		req.Header.Set("User-Agent", c.cfg.UserAgent)
+		c.applyRequestHeaders(req, endpoint, false, forceAllAuth)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

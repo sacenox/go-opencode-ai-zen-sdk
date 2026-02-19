@@ -1,19 +1,6 @@
 package zen
 
-import (
-	"context"
-	"net/http"
-	"time"
-)
-
-// defaultResponseHeaderTimeout is applied to the transport of the internally
-// created HTTP client when the caller does not supply their own *http.Client.
-// It guards against a server that accepts the TCP connection but never sends
-// response headers (hung server / network black-hole).  It deliberately does
-// NOT use http.Client.Timeout, which is a total round-trip deadline that fires
-// while the response body is still being read and therefore kills long-running
-// SSE streams.
-const defaultResponseHeaderTimeout = 30 * time.Second
+import "net/http"
 
 type Client struct {
 	cfg        Config
@@ -37,7 +24,7 @@ func NewClient(cfg Config) (*Client, error) {
 		} else {
 			transport = &http.Transport{}
 		}
-		transport.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+		transport.ResponseHeaderTimeout = cfg.ResponseHeaderTimeout
 		httpClient = &http.Client{
 			Transport: transport,
 			// cfg.Timeout is 0 by default (unlimited).  If the caller sets it
@@ -51,8 +38,4 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg:        cfg,
 		httpClient: httpClient,
 	}, nil
-}
-
-func (c *Client) Do(ctx context.Context, method, path string, body []byte) ([]byte, http.Header, error) {
-	return c.doRequest(ctx, method, path, body)
 }

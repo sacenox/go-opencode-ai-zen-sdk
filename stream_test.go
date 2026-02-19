@@ -31,7 +31,7 @@ func TestStreamParsing(t *testing.T) {
 		t.Fatalf("client: %v", err)
 	}
 
-	stream, err := client.startStream(context.Background(), "POST", "/responses", []byte("{}"))
+	stream, err := client.startStream(context.Background(), EndpointResponses, "POST", "/responses", []byte("{}"))
 	if err != nil {
 		t.Fatalf("startStream: %v", err)
 	}
@@ -58,8 +58,8 @@ func TestStreamParsing(t *testing.T) {
 
 // TestDefaultClientHasNoBodyTimeout asserts that the http.Client constructed
 // by NewClient has Timeout == 0 (unlimited body read) and that its transport
-// carries a ResponseHeaderTimeout.  This is the regression test for the bug
-// where a 60-second http.Client.Timeout killed long-running SSE streams.
+// has no ResponseHeaderTimeout by default (to avoid aborting slow-starting
+// streaming responses).
 func TestDefaultClientHasNoBodyTimeout(t *testing.T) {
 	c, err := NewClient(Config{APIKey: "key"})
 	if err != nil {
@@ -75,8 +75,8 @@ func TestDefaultClientHasNoBodyTimeout(t *testing.T) {
 		t.Fatalf("expected *http.Transport, got %T", c.httpClient.Transport)
 	}
 
-	if transport.ResponseHeaderTimeout == 0 {
-		t.Fatal("expected ResponseHeaderTimeout to be set on transport, got 0")
+	if transport.ResponseHeaderTimeout != 0 {
+		t.Fatalf("expected ResponseHeaderTimeout == 0, got %v", transport.ResponseHeaderTimeout)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestSlowStreamNotKilledByClientTimeout(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	stream, err := client.startStream(context.Background(), "POST", "/responses", []byte("{}"))
+	stream, err := client.startStream(context.Background(), EndpointResponses, "POST", "/responses", []byte("{}"))
 	if err != nil {
 		t.Fatalf("startStream: %v", err)
 	}

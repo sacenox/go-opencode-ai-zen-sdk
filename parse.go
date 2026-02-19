@@ -41,7 +41,7 @@ type NormalizedDelta struct {
 }
 
 // ParseNormalizedEvent parses a single UnifiedEvent into zero or more NormalizedDelta values.
-// Callers should call this for every event emitted by UnifiedStreamNormalized and accumulate
+// Callers should call this for every event emitted by StreamEvents and accumulate
 // the results. Multiple deltas can be returned from a single event (e.g. Anthropic emits a
 // content_block_start followed by content_block_delta in separate events, but a Gemini chunk
 // may carry both a thought part and a text part).

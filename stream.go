@@ -23,26 +23,14 @@ type Stream struct {
 	Close  func() error
 }
 
-func (c *Client) startStream(ctx context.Context, method, path string, body []byte) (*Stream, error) {
+func (c *Client) startStream(ctx context.Context, endpoint EndpointType, method, path string, body []byte) (*Stream, error) {
 	url := joinURL(c.cfg.BaseURL, path)
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
-	if len(body) > 0 {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	switch {
-	case strings.HasPrefix(path, "/messages"):
-		req.Header.Set("x-api-key", c.cfg.APIKey)
-	case strings.HasPrefix(path, "/models/") && strings.Contains(path, "gemini"):
-		req.Header.Set("x-goog-api-key", c.cfg.APIKey)
-	default:
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	}
-	req.Header.Set("User-Agent", c.cfg.UserAgent)
-	req.Header.Set("Accept", "text/event-stream")
+	c.applyRequestHeaders(req, endpoint, true, false)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

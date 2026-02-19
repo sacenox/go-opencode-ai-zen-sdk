@@ -62,18 +62,23 @@ type NormalizedRequest struct {
 func (r NormalizedRequest) ToResponsesRequest() (*ResponsesRequest, error) {
 	req := &ResponsesRequest{
 		Model:           r.Model,
-		Instructions:    r.System,
 		Temperature:     r.Temperature,
 		MaxOutputTokens: r.MaxTokens,
 		Stream:          r.Stream,
 		Extra:           r.Extra,
 	}
 
-	if len(r.Messages) == 0 {
+	messages := make([]NormalizedMessage, 0, len(r.Messages)+1)
+	if strings.TrimSpace(r.System) != "" {
+		messages = append(messages, NormalizedMessage{Role: "system", Content: r.System})
+	}
+	messages = append(messages, r.Messages...)
+
+	if len(messages) == 0 {
 		req.Input = ""
 	} else {
-		items := make([]any, 0, len(r.Messages))
-		for _, m := range r.Messages {
+		items := make([]any, 0, len(messages))
+		for _, m := range messages {
 			// Tool result message → function_call_output item.
 			if strings.ToLower(strings.TrimSpace(m.Role)) == "tool" {
 				items = append(items, ResponsesFunctionCallOutput{
@@ -86,7 +91,13 @@ func (r NormalizedRequest) ToResponsesRequest() (*ResponsesRequest, error) {
 			// Assistant message with tool calls → optional text item + function_call items.
 			if strings.ToLower(strings.TrimSpace(m.Role)) == "assistant" && len(m.ToolCalls) > 0 {
 				if strings.TrimSpace(m.Content) != "" {
-					items = append(items, ResponsesInputMessage{Role: m.Role, Content: m.Content})
+					items = append(items, ResponsesInputMessage{
+						Role: m.Role,
+						Content: []ResponsesInputContent{{
+							Type: "output_text",
+							Text: m.Content,
+						}},
+					})
 				}
 				for _, tc := range m.ToolCalls {
 					items = append(items, ResponsesFunctionCall{
@@ -98,13 +109,31 @@ func (r NormalizedRequest) ToResponsesRequest() (*ResponsesRequest, error) {
 				}
 				continue
 			}
-			items = append(items, ResponsesInputMessage{Role: m.Role, Content: m.Content})
+
+			role := strings.ToLower(strings.TrimSpace(m.Role))
+			contentType := "input_text"
+			if role == "assistant" {
+				contentType = "output_text"
+			}
+			items = append(items, ResponsesInputMessage{
+				Role: m.Role,
+				Content: []ResponsesInputContent{{
+					Type: contentType,
+					Text: m.Content,
+				}},
+			})
 		}
 		req.Input = items
 	}
 
-	if r.Reasoning != nil && r.Reasoning.Effort != "" {
-		req.Reasoning = &ResponsesReasoning{Effort: r.Reasoning.Effort}
+	if r.Reasoning != nil {
+		reasoning := &ResponsesReasoning{Effort: r.Reasoning.Effort}
+		if reasoning.Summary == "" {
+			reasoning.Summary = "auto"
+		}
+		if reasoning.Effort != "" || reasoning.Summary != "" {
+			req.Reasoning = reasoning
+		}
 	}
 
 	if len(r.Tools) > 0 {
@@ -256,11 +285,13 @@ func (r NormalizedRequest) ToMessagesRequest() (*MessagesRequest, error) {
 }
 
 func (r NormalizedRequest) ToGeminiRequest() (*GeminiRequest, error) {
+	systemText, messages := splitSystemMessages(r.System, r.Messages)
+
 	// Build a call-id → function-name index from all assistant tool calls so
 	// that tool-result messages can have their FunctionName derived
 	// automatically when the caller did not set it explicitly.
 	callIDToName := make(map[string]string)
-	for _, m := range r.Messages {
+	for _, m := range messages {
 		if strings.ToLower(strings.TrimSpace(m.Role)) == "assistant" {
 			for _, tc := range m.ToolCalls {
 				if tc.ID != "" && tc.Name != "" {
@@ -270,8 +301,8 @@ func (r NormalizedRequest) ToGeminiRequest() (*GeminiRequest, error) {
 		}
 	}
 
-	contents := make([]GeminiContent, 0, len(r.Messages))
-	for _, m := range r.Messages {
+	contents := make([]GeminiContent, 0, len(messages))
+	for _, m := range messages {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
 
 		// Tool result: role "tool" → user turn with functionResponse parts.
@@ -321,10 +352,10 @@ func (r NormalizedRequest) ToGeminiRequest() (*GeminiRequest, error) {
 	}
 
 	var systemInstruction *GeminiContent
-	if strings.TrimSpace(r.System) != "" {
+	if strings.TrimSpace(systemText) != "" {
 		systemInstruction = &GeminiContent{
 			Role:  "system",
-			Parts: []GeminiPart{{Text: r.System}},
+			Parts: []GeminiPart{{Text: systemText}},
 		}
 	}
 
@@ -339,10 +370,22 @@ func (r NormalizedRequest) ToGeminiRequest() (*GeminiRequest, error) {
 		Temperature:     r.Temperature,
 		MaxOutputTokens: r.MaxTokens,
 	}
-	if r.Reasoning != nil && r.Reasoning.Effort != "" {
-		level := mapEffortToThinkingLevel(r.Reasoning.Effort)
-		if level != "" {
-			config.ThinkingConfig = &GeminiThinkingConfig{ThinkingLevel: level}
+	if r.Reasoning != nil {
+		thinking := &GeminiThinkingConfig{}
+		if r.Reasoning.BudgetTokens > 0 {
+			budget := r.Reasoning.BudgetTokens
+			thinking.ThinkingBudget = &budget
+		}
+		if r.Reasoning.Effort != "" {
+			level := mapEffortToThinkingLevel(r.Reasoning.Effort)
+			if level != "" {
+				thinking.ThinkingLevel = level
+			}
+		}
+		if thinking.ThinkingBudget != nil || thinking.ThinkingLevel != "" {
+			include := true
+			thinking.IncludeThoughts = &include
+			config.ThinkingConfig = thinking
 		}
 	}
 	if config.Temperature != nil || config.MaxOutputTokens != nil || config.ThinkingConfig != nil {
@@ -465,6 +508,27 @@ func normalizeAnthropicMessages(system string, msgs []NormalizedMessage) (string
 	return combinedSystem, out
 }
 
+func splitSystemMessages(system string, msgs []NormalizedMessage) (string, []NormalizedMessage) {
+	combinedSystem := strings.TrimSpace(system)
+	out := make([]NormalizedMessage, 0, len(msgs))
+
+	for _, m := range msgs {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == "system" || role == "developer" {
+			if strings.TrimSpace(m.Content) != "" {
+				if combinedSystem != "" {
+					combinedSystem += "\n\n"
+				}
+				combinedSystem += m.Content
+			}
+			continue
+		}
+		out = append(out, m)
+	}
+
+	return combinedSystem, out
+}
+
 func mapEffortToBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "low":
@@ -481,11 +545,11 @@ func mapEffortToBudget(effort string) int {
 func mapEffortToThinkingLevel(effort string) string {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "low":
-		return "LOW"
+		return "low"
 	case "medium":
-		return "MEDIUM"
+		return "medium"
 	case "high":
-		return "HIGH"
+		return "high"
 	default:
 		return ""
 	}

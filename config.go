@@ -15,6 +15,15 @@ type RetryConfig struct {
 	Backoff              func(attempt int) time.Duration
 }
 
+type AuthHeader string
+
+const (
+	AuthHeaderAuto       AuthHeader = "auto"
+	AuthHeaderBearer     AuthHeader = "authorization"
+	AuthHeaderAPIKey     AuthHeader = "x-api-key"
+	AuthHeaderGoogAPIKey AuthHeader = "x-goog-api-key"
+)
+
 type Config struct {
 	APIKey  string
 	BaseURL string
@@ -28,14 +37,17 @@ type Config struct {
 	// Leave at 0 (the default) for streaming calls and enforce deadlines via
 	// the request context instead (e.g. context.WithTimeout / WithDeadline).
 	//
-	// The internal transport always applies a 30-second
-	// ResponseHeaderTimeout independently of this field, protecting against
-	// servers that accept the connection but never send headers.  This field
-	// has no effect when HTTPClient is supplied by the caller.
-	Timeout    time.Duration
-	UserAgent  string
-	HTTPClient *http.Client
-	Retry      RetryConfig
+	// ResponseHeaderTimeout sets http.Transport.ResponseHeaderTimeout on the
+	// internal HTTP client. Leave at 0 (the default) to match fetch behavior
+	// and avoid aborting slow-starting streaming responses.
+	//
+	// This field has no effect when HTTPClient is supplied by the caller.
+	ResponseHeaderTimeout time.Duration
+	Timeout               time.Duration
+	UserAgent             string
+	HTTPClient            *http.Client
+	Retry                 RetryConfig
+	AuthHeader            AuthHeader
 }
 
 func (c *Config) applyDefaults() error {
@@ -51,6 +63,10 @@ func (c *Config) applyDefaults() error {
 
 	if strings.TrimSpace(c.UserAgent) == "" {
 		c.UserAgent = "go-opencode-zen-sdk/0.1"
+	}
+
+	if c.AuthHeader == "" {
+		c.AuthHeader = AuthHeaderAuto
 	}
 
 	if c.Retry.Backoff == nil {

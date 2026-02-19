@@ -299,10 +299,10 @@ func TestParseGeminiDone(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Integration: UnifiedStreamNormalizedParsed end-to-end with a mock server
+// Integration: Stream end-to-end with a mock server
 // ---------------------------------------------------------------------------
 
-func TestUnifiedStreamNormalizedParsedChatCompletions(t *testing.T) {
+func TestStreamChatCompletions(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
@@ -316,9 +316,9 @@ func TestUnifiedStreamNormalizedParsedChatCompletions(t *testing.T) {
 		Messages: []NormalizedMessage{{Role: "user", Content: "hi"}},
 		Stream:   true,
 	}
-	deltaCh, errCh, err := client.UnifiedStreamNormalizedParsed(testCtx(t), req)
+	deltaCh, errCh, err := client.Stream(testCtx(t), req)
 	if err != nil {
-		t.Fatalf("UnifiedStreamNormalizedParsed: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
 	var deltas []NormalizedDelta
@@ -338,7 +338,7 @@ func TestUnifiedStreamNormalizedParsedChatCompletions(t *testing.T) {
 	}
 }
 
-func TestUnifiedStreamNormalizedParsedMessages(t *testing.T) {
+func TestStreamMessages(t *testing.T) {
 	sse := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -351,9 +351,9 @@ func TestUnifiedStreamNormalizedParsedMessages(t *testing.T) {
 		Messages: []NormalizedMessage{{Role: "user", Content: "hi"}},
 		Stream:   true,
 	}
-	deltaCh, errCh, err := client.UnifiedStreamNormalizedParsed(testCtx(t), req)
+	deltaCh, errCh, err := client.Stream(testCtx(t), req)
 	if err != nil {
-		t.Fatalf("UnifiedStreamNormalizedParsed: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
 	var deltas []NormalizedDelta
@@ -367,7 +367,7 @@ func TestUnifiedStreamNormalizedParsedMessages(t *testing.T) {
 	assertDeltaSequence(t, deltas, DeltaReasoning, DeltaText, DeltaDone)
 }
 
-func TestUnifiedStreamNormalizedParsedResponses(t *testing.T) {
+func TestStreamResponses(t *testing.T) {
 	sse := "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"reasoning\"}\n\n" +
 		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"text\"}\n\n" +
 		"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
@@ -380,9 +380,9 @@ func TestUnifiedStreamNormalizedParsedResponses(t *testing.T) {
 		Messages: []NormalizedMessage{{Role: "user", Content: "hi"}},
 		Stream:   true,
 	}
-	deltaCh, errCh, err := client.UnifiedStreamNormalizedParsed(testCtx(t), req)
+	deltaCh, errCh, err := client.Stream(testCtx(t), req)
 	if err != nil {
-		t.Fatalf("UnifiedStreamNormalizedParsed: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
 	var deltas []NormalizedDelta
@@ -396,7 +396,7 @@ func TestUnifiedStreamNormalizedParsedResponses(t *testing.T) {
 	assertDeltaSequence(t, deltas, DeltaReasoning, DeltaText, DeltaDone)
 }
 
-func TestUnifiedStreamNormalizedParsedGemini(t *testing.T) {
+func TestStreamGemini(t *testing.T) {
 	sse := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"thinking\",\"thought\":true}]}}]}\n\n" +
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"answer\"}]},\"finishReason\":\"STOP\"}]}\n\n"
 
@@ -408,9 +408,9 @@ func TestUnifiedStreamNormalizedParsedGemini(t *testing.T) {
 		Messages: []NormalizedMessage{{Role: "user", Content: "hi"}},
 		Stream:   true,
 	}
-	deltaCh, errCh, err := client.UnifiedStreamNormalizedParsed(testCtx(t), req)
+	deltaCh, errCh, err := client.Stream(testCtx(t), req)
 	if err != nil {
-		t.Fatalf("UnifiedStreamNormalizedParsed: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
 	var deltas []NormalizedDelta

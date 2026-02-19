@@ -17,7 +17,7 @@ type Model struct {
 }
 
 func (c *Client) ListModels(ctx context.Context) (*ModelsResponse, error) {
-	data, _, err := c.doRequest(ctx, "GET", "/models", nil)
+	data, _, err := c.doRequest(ctx, "GET", "/models", nil, EndpointModels, true)
 	if err != nil {
 		return nil, err
 	}

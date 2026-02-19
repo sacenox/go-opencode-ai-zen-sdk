@@ -47,6 +47,9 @@ func TestNormalizedToResponsesToolHistory(t *testing.T) {
 	if !ok || userMsg.Role != "user" {
 		t.Fatalf("item[0] should be user ResponsesInputMessage, got %T %+v", items[0], items[0])
 	}
+	if len(userMsg.Content) != 1 || userMsg.Content[0].Text == "" {
+		t.Fatalf("item[0] content should have input_text, got %+v", userMsg.Content)
+	}
 
 	// [1] function_call item for assistant tool call
 	fc, ok := items[1].(ResponsesFunctionCall)
@@ -82,6 +85,9 @@ func TestNormalizedToResponsesToolHistory(t *testing.T) {
 	assistantMsg, ok := items[3].(ResponsesInputMessage)
 	if !ok || assistantMsg.Role != "assistant" {
 		t.Fatalf("item[3] should be assistant ResponsesInputMessage, got %T %+v", items[3], items[3])
+	}
+	if len(assistantMsg.Content) != 1 || assistantMsg.Content[0].Type != "output_text" {
+		t.Fatalf("item[3] content should be output_text, got %+v", assistantMsg.Content)
 	}
 }
 
@@ -302,8 +308,8 @@ func TestNormalizedToResponses(t *testing.T) {
 	if resp.Model != req.Model {
 		t.Fatalf("model mismatch: %s", resp.Model)
 	}
-	if resp.Instructions != "system" {
-		t.Fatalf("instructions mismatch: %s", resp.Instructions)
+	if resp.Input == nil {
+		t.Fatalf("input should be set")
 	}
 	if resp.Reasoning == nil || resp.Reasoning.Effort != "low" {
 		t.Fatalf("reasoning not mapped")
