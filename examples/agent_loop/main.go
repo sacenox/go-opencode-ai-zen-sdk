@@ -127,9 +127,10 @@ func runAgentLoop(client *zen.Client, model string, debugSSE bool, tools map[str
 				calls[i].Name = toolName
 			}
 			assistant.ToolCalls = append(assistant.ToolCalls, zen.NormalizedToolCall{
-				ID:        calls[i].ID,
-				Name:      calls[i].Name,
-				Arguments: calls[i].Arguments,
+				ID:               calls[i].ID,
+				Name:             calls[i].Name,
+				Arguments:        calls[i].Arguments,
+				ThoughtSignature: calls[i].ThoughtSignature,
 			})
 		}
 		messages = append(messages, assistant)
@@ -243,15 +244,6 @@ func normalizeModelAlias(value string) string {
 	}
 	model = strings.ReplaceAll(model, " ", "-")
 	model = strings.ReplaceAll(model, "_", "-")
-
-	switch model {
-	case "haiku", "claude-haiku", "claude-haiku-3-5", "claude-3-5-haiku", "claude-haiku-4-5":
-		return "claude-3-5-haiku"
-	case "gemini-3-pro", "gemini-3-pro-preview", "gemini-3.0-pro", "gemini-3-pro-preview-raw":
-		return "gemini-3-pro"
-	case "minimax2.5", "minimax-2.5", "minimax-m2.5":
-		return "minimax-m2.5"
-	}
 
 	return model
 }

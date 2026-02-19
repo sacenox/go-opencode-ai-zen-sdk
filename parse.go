@@ -472,7 +472,6 @@ func parseGeminiDelta(ev UnifiedEvent) []NormalizedDelta {
 	for i, part := range cand.Content.Parts {
 		if part.FunctionCall != nil {
 			callID := fmt.Sprintf("gemini-%d", i)
-			callID = encodeGeminiToolCallID(callID, part.ThoughtSignature)
 			out = append(out, NormalizedDelta{
 				Type:              DeltaToolCallBegin,
 				ToolCallIndex:     i,

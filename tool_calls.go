@@ -8,9 +8,10 @@ import (
 
 // StreamToolCall is a fully assembled tool call extracted from a stream.
 type StreamToolCall struct {
-	ID        string
-	Name      string
-	Arguments json.RawMessage
+	ID               string
+	Name             string
+	Arguments        json.RawMessage
+	ThoughtSignature string
 }
 
 // ToolCallAccumulator stitches streaming tool call deltas into complete calls.
@@ -24,6 +25,7 @@ type toolCallState struct {
 	index int
 	id    string
 	name  string
+	sig   string
 	args  strings.Builder
 	full  string
 }
@@ -51,6 +53,9 @@ func (a *ToolCallAccumulator) Apply(delta NormalizedDelta) bool {
 		if call.name == "" {
 			call.name = delta.ToolCallName
 		}
+		if call.sig == "" {
+			call.sig = delta.ToolCallSignature
+		}
 	case DeltaToolCallArgumentsDelta:
 		call.args.WriteString(delta.ArgumentsDelta)
 	case DeltaToolCallDone:
@@ -59,6 +64,9 @@ func (a *ToolCallAccumulator) Apply(delta NormalizedDelta) bool {
 		}
 		if call.name == "" {
 			call.name = delta.ToolCallName
+		}
+		if call.sig == "" {
+			call.sig = delta.ToolCallSignature
 		}
 		if delta.ArgumentsFull != "" {
 			call.full = delta.ArgumentsFull
@@ -89,9 +97,10 @@ func (a *ToolCallAccumulator) CompleteCalls() []StreamToolCall {
 			full = call.args.String()
 		}
 		out = append(out, StreamToolCall{
-			ID:        id,
-			Name:      call.name,
-			Arguments: json.RawMessage(full),
+			ID:               id,
+			Name:             call.name,
+			Arguments:        json.RawMessage(full),
+			ThoughtSignature: call.sig,
 		})
 	}
 	return out
