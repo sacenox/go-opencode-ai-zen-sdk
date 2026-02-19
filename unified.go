@@ -48,6 +48,16 @@ func (c *Client) UnifiedCreate(ctx context.Context, req UnifiedRequest) (*Unifie
 		return nil, err
 	}
 
+	// Gemini model endpoints require the SSE path even for non-streaming requests;
+	// delegate to CreateModelContent which handles the SSE collect-last-chunk pattern.
+	if endpoint == EndpointModels && strings.TrimSpace(req.Model) != "" {
+		data, err := c.CreateModelContent(ctx, req.Model, req.Body, req.Raw)
+		if err != nil {
+			return nil, err
+		}
+		return &UnifiedResponse{Endpoint: endpoint, Body: data}, nil
+	}
+
 	var payload []byte
 	if req.Body != nil || req.Raw != nil || strings.ToUpper(method) != "GET" {
 		var err error
@@ -77,6 +87,32 @@ func (c *Client) UnifiedStream(ctx context.Context, req UnifiedRequest) (<-chan 
 	endpoint, path, method, err := c.resolveEndpoint(req)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Gemini model endpoints require the SSE URL scheme; delegate to StreamModelContent.
+	if endpoint == EndpointModels && strings.TrimSpace(req.Model) != "" {
+		evCh, errCh, err := c.StreamModelContent(ctx, req.Model, req.Body, req.Raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		events := make(chan UnifiedEvent)
+		errs := make(chan error, 1)
+		go func() {
+			defer close(events)
+			defer close(errs)
+			for ev := range evCh {
+				events <- UnifiedEvent{
+					Endpoint: endpoint,
+					Event:    ev.Event,
+					Data:     ev.Data,
+					Raw:      ev.Raw,
+				}
+			}
+			if streamErr := <-errCh; streamErr != nil {
+				errs <- streamErr
+			}
+		}()
+		return events, errs, nil
 	}
 
 	var payload []byte

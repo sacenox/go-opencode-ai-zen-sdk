@@ -66,9 +66,8 @@ func (r GeminiRequest) MarshalJSON() ([]byte, error) {
 	if r.ToolConfig != nil {
 		base["toolConfig"] = r.ToolConfig
 	}
-	if r.Stream {
-		base["stream"] = r.Stream
-	}
+	// Note: Gemini streaming is controlled by the URL (:streamGenerateContent?alt=sse),
+	// not a body field. The Stream field is intentionally omitted here.
 
 	return marshalWithExtra(base, r.Extra)
 }

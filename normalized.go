@@ -140,12 +140,21 @@ func (r NormalizedRequest) ToChatCompletionsRequest() (*ChatCompletionsRequest, 
 
 func (r NormalizedRequest) ToMessagesRequest() (*MessagesRequest, error) {
 	system, messages := normalizeAnthropicMessages(r.System, r.Messages)
+
+	// Anthropic's messages API requires max_tokens; apply a default when the
+	// caller did not specify one so the normalized path works out of the box.
+	maxTokens := r.MaxTokens
+	if maxTokens == nil {
+		defaultMax := 1024
+		maxTokens = &defaultMax
+	}
+
 	req := &MessagesRequest{
 		Model:       r.Model,
 		System:      system,
 		Messages:    messages,
 		Temperature: r.Temperature,
-		MaxTokens:   r.MaxTokens,
+		MaxTokens:   maxTokens,
 		Stream:      r.Stream,
 		Extra:       r.Extra,
 	}
