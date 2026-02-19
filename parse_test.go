@@ -122,6 +122,26 @@ func TestParseChatCompletionsDone(t *testing.T) {
 	}
 }
 
+func TestParseChatCompletionsUsageOnFinishChunk(t *testing.T) {
+	// Usage included on the same chunk as finish_reason (OpenAI default).
+	ev := makeEvent(EndpointChatCompletions, `{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":45}}`)
+	deltas := ParseNormalizedEvent(ev)
+	assertDeltaSequence(t, deltas, DeltaUsage, DeltaDone)
+	if deltas[0].InputTokens != 120 || deltas[0].OutputTokens != 45 {
+		t.Fatalf("usage tokens wrong: %+v", deltas[0])
+	}
+}
+
+func TestParseChatCompletionsUsageOnSplitChunk(t *testing.T) {
+	// Usage on a separate chunk with empty choices (stream_options providers).
+	ev := makeEvent(EndpointChatCompletions, `{"choices":[],"usage":{"prompt_tokens":80,"completion_tokens":30}}`)
+	deltas := ParseNormalizedEvent(ev)
+	assertDeltaSequence(t, deltas, DeltaUsage)
+	if deltas[0].InputTokens != 80 || deltas[0].OutputTokens != 30 {
+		t.Fatalf("usage tokens wrong: %+v", deltas[0])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // responses (OpenAI Responses API)
 // ---------------------------------------------------------------------------
@@ -184,6 +204,15 @@ func TestParseResponsesDone(t *testing.T) {
 	}
 }
 
+func TestParseResponsesUsage(t *testing.T) {
+	ev := makeEvent(EndpointResponses, `{"type":"response.completed","response":{"usage":{"input_tokens":120,"output_tokens":45}}}`)
+	deltas := ParseNormalizedEvent(ev)
+	assertDeltaSequence(t, deltas, DeltaUsage, DeltaDone)
+	if deltas[0].InputTokens != 120 || deltas[0].OutputTokens != 45 {
+		t.Fatalf("usage tokens wrong: %+v", deltas[0])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // messages (Anthropic)
 // ---------------------------------------------------------------------------
@@ -234,6 +263,26 @@ func TestParseMessagesStop(t *testing.T) {
 	deltas := ParseNormalizedEvent(ev)
 	if len(deltas) != 1 || deltas[0].Type != DeltaDone {
 		t.Fatalf("expected done delta, got %+v", deltas)
+	}
+}
+
+func TestParseMessagesUsageStart(t *testing.T) {
+	// message_start carries input tokens.
+	ev := makeEventNamed(EndpointMessages, "message_start", `{"type":"message_start","message":{"usage":{"input_tokens":120}}}`)
+	deltas := ParseNormalizedEvent(ev)
+	assertDeltaSequence(t, deltas, DeltaUsage)
+	if deltas[0].InputTokens != 120 || deltas[0].OutputTokens != 0 {
+		t.Fatalf("usage tokens wrong: %+v", deltas[0])
+	}
+}
+
+func TestParseMessagesUsageDelta(t *testing.T) {
+	// message_delta carries output tokens at the top-level usage field.
+	ev := makeEventNamed(EndpointMessages, "message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":45}}`)
+	deltas := ParseNormalizedEvent(ev)
+	assertDeltaSequence(t, deltas, DeltaUsage)
+	if deltas[0].OutputTokens != 45 || deltas[0].InputTokens != 0 {
+		t.Fatalf("usage tokens wrong: %+v", deltas[0])
 	}
 }
 
@@ -298,6 +347,26 @@ func TestParseGeminiDone(t *testing.T) {
 	}
 	if deltas[len(deltas)-1].Type != DeltaDone {
 		t.Fatalf("last delta should be done, got %s", deltas[len(deltas)-1].Type)
+	}
+}
+
+func TestParseGeminiUsageOnFinalChunk(t *testing.T) {
+	// Usage alongside candidates (most common case).
+	ev := makeEvent(EndpointModels, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":45}}`)
+	deltas := ParseNormalizedEvent(ev)
+	assertDeltaSequence(t, deltas, DeltaUsage, DeltaText, DeltaDone)
+	if deltas[0].InputTokens != 120 || deltas[0].OutputTokens != 45 {
+		t.Fatalf("usage tokens wrong: %+v", deltas[0])
+	}
+}
+
+func TestParseGeminiUsageOnCandidatelessChunk(t *testing.T) {
+	// Trailing chunk with no candidates, only usageMetadata.
+	ev := makeEvent(EndpointModels, `{"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":45}}`)
+	deltas := ParseNormalizedEvent(ev)
+	assertDeltaSequence(t, deltas, DeltaUsage)
+	if deltas[0].InputTokens != 120 || deltas[0].OutputTokens != 45 {
+		t.Fatalf("usage tokens wrong: %+v", deltas[0])
 	}
 }
 

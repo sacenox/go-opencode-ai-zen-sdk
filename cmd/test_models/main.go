@@ -15,14 +15,16 @@ import (
 var probeModels = []string{"gpt-5.1", "claude-sonnet-4-6", "gemini-3-flash", "kimi-k2-thinking"}
 
 type testResult struct {
-	Model    string
-	Endpoint string
-	Success  bool
-	Error    string
-	Latency  time.Duration
-	Request  string
-	Response string
-	Stream   bool
+	Model        string
+	Endpoint     string
+	Success      bool
+	Error        string
+	Latency      time.Duration
+	Request      string
+	Response     string
+	Stream       bool
+	InputTokens  int
+	OutputTokens int
 }
 
 func main() {
@@ -101,11 +103,11 @@ func testStreamParsed(ctx context.Context, client *zen.Client, modelID string) t
 
 	deltaCh, errCh, err := client.Stream(ctx, req)
 	if err != nil {
-		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start), 0, 0)
 	}
 
 	var textBuf, reasoningBuf strings.Builder
-	var count int
+	var count, inTok, outTok int
 	for d := range deltaCh {
 		count++
 		switch d.Type {
@@ -113,14 +115,19 @@ func testStreamParsed(ctx context.Context, client *zen.Client, modelID string) t
 			textBuf.WriteString(d.Content)
 		case zen.DeltaReasoning:
 			reasoningBuf.WriteString(d.Content)
+		case zen.DeltaUsage:
+			if d.InputTokens > inTok {
+				inTok = d.InputTokens
+			}
+			outTok += d.OutputTokens
 		}
 	}
 	if streamErr := <-errCh; streamErr != nil {
-		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start), 0, 0)
 	}
 
 	resp := fmt.Sprintf("deltas=%d text=%s reasoning=%s", count, truncate(textBuf.String(), 40), truncate(reasoningBuf.String(), 40))
-	return makeResult(modelID, endpoint, true, string(reqBody), resp, nil, time.Since(start))
+	return makeResult(modelID, endpoint, true, string(reqBody), resp, nil, time.Since(start), inTok, outTok)
 }
 
 // toolHistory returns a pre-built two-turn tool-use conversation:
@@ -159,23 +166,29 @@ func testToolHistoryStream(ctx context.Context, client *zen.Client, modelID stri
 
 	deltaCh, errCh, err := client.Stream(ctx, req)
 	if err != nil {
-		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start), 0, 0)
 	}
 
 	var textBuf strings.Builder
-	var count int
+	var count, inTok, outTok int
 	for d := range deltaCh {
 		count++
-		if d.Type == zen.DeltaText {
+		switch d.Type {
+		case zen.DeltaText:
 			textBuf.WriteString(d.Content)
+		case zen.DeltaUsage:
+			if d.InputTokens > inTok {
+				inTok = d.InputTokens
+			}
+			outTok += d.OutputTokens
 		}
 	}
 	if streamErr := <-errCh; streamErr != nil {
-		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start), 0, 0)
 	}
 
 	resp := fmt.Sprintf("deltas=%d text=%s", count, truncate(textBuf.String(), 60))
-	return makeResult(modelID, endpoint, true, string(reqBody), resp, nil, time.Since(start))
+	return makeResult(modelID, endpoint, true, string(reqBody), resp, nil, time.Since(start), inTok, outTok)
 }
 
 func testReasoningStream(ctx context.Context, client *zen.Client, modelID string) testResult {
@@ -190,11 +203,11 @@ func testReasoningStream(ctx context.Context, client *zen.Client, modelID string
 
 	deltaCh, errCh, err := client.Stream(ctx, req)
 	if err != nil {
-		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", err, time.Since(start), 0, 0)
 	}
 
 	var textBuf, reasoningBuf strings.Builder
-	var deltaCount int
+	var deltaCount, inTok, outTok int
 	for d := range deltaCh {
 		deltaCount++
 		switch d.Type {
@@ -202,30 +215,37 @@ func testReasoningStream(ctx context.Context, client *zen.Client, modelID string
 			textBuf.WriteString(d.Content)
 		case zen.DeltaReasoning:
 			reasoningBuf.WriteString(d.Content)
+		case zen.DeltaUsage:
+			if d.InputTokens > inTok {
+				inTok = d.InputTokens
+			}
+			outTok += d.OutputTokens
 		}
 	}
 	if streamErr := <-errCh; streamErr != nil {
-		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start))
+		return makeResult(modelID, endpoint, true, string(reqBody), "", streamErr, time.Since(start), 0, 0)
 	}
 
 	if reasoningBuf.Len() == 0 {
 		return makeResult(modelID, endpoint, true, string(reqBody),
 			fmt.Sprintf("deltas=%d text=%s", deltaCount, truncate(textBuf.String(), 60)),
 			fmt.Errorf("model %s: stream contained no reasoning/thinking deltas", modelID),
-			time.Since(start))
+			time.Since(start), inTok, outTok)
 	}
 	return makeResult(modelID, endpoint, true, string(reqBody),
 		fmt.Sprintf("deltas=%d reasoning=%s text=%s",
 			deltaCount,
 			truncate(reasoningBuf.String(), 40),
 			truncate(textBuf.String(), 40)),
-		nil, time.Since(start))
+		nil, time.Since(start), inTok, outTok)
 }
 
 // drainUnifiedStream consumes a UnifiedEvent channel and builds a testResult.
+// StreamEvents operates at the raw event level and does not parse DeltaUsage,
+// so token counts are not available here.
 func drainUnifiedStream(modelID, endpoint, reqBody string, eventCh <-chan zen.UnifiedEvent, errCh <-chan error, initErr error, start time.Time) testResult {
 	if initErr != nil {
-		return makeResult(modelID, endpoint, true, reqBody, "", initErr, time.Since(start))
+		return makeResult(modelID, endpoint, true, reqBody, "", initErr, time.Since(start), 0, 0)
 	}
 	var count int
 	var last string
@@ -238,22 +258,24 @@ func drainUnifiedStream(modelID, endpoint, reqBody string, eventCh <-chan zen.Un
 		}
 	}
 	if err := <-errCh; err != nil {
-		return makeResult(modelID, endpoint, true, reqBody, "", err, time.Since(start))
+		return makeResult(modelID, endpoint, true, reqBody, "", err, time.Since(start), 0, 0)
 	}
 	if resolved != "" {
 		endpoint = resolved
 	}
-	return makeResult(modelID, endpoint, true, reqBody, fmt.Sprintf("events=%d last=%s", count, truncate(last, 80)), nil, time.Since(start))
+	return makeResult(modelID, endpoint, true, reqBody, fmt.Sprintf("events=%d last=%s", count, truncate(last, 80)), nil, time.Since(start), 0, 0)
 }
 
-func makeResult(modelID, endpoint string, stream bool, req, resp string, err error, latency time.Duration) testResult {
+func makeResult(modelID, endpoint string, stream bool, req, resp string, err error, latency time.Duration, inTok, outTok int) testResult {
 	r := testResult{
-		Model:    modelID,
-		Endpoint: endpoint,
-		Stream:   stream,
-		Latency:  latency,
-		Request:  req,
-		Response: resp,
+		Model:        modelID,
+		Endpoint:     endpoint,
+		Stream:       stream,
+		Latency:      latency,
+		Request:      req,
+		Response:     resp,
+		InputTokens:  inTok,
+		OutputTokens: outTok,
 	}
 	if err != nil {
 		r.Error = err.Error()
@@ -286,7 +308,11 @@ func printResult(r testResult) {
 		status = "✗"
 	}
 	mode := "stream"
-	fmt.Printf("  %s %-25s [%-15s] [%-10s] %v\n", status, r.Model, r.Endpoint, mode, r.Latency)
+	usage := "-"
+	if r.InputTokens > 0 || r.OutputTokens > 0 {
+		usage = fmt.Sprintf("in=%d out=%d", r.InputTokens, r.OutputTokens)
+	}
+	fmt.Printf("  %s %-25s [%-15s] [%-10s] %-20s %v\n", status, r.Model, r.Endpoint, mode, usage, r.Latency)
 }
 
 func truncate(s string, max int) string {

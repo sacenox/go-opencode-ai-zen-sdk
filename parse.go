@@ -22,6 +22,8 @@ const (
 	DeltaToolCallDone NormalizedDeltaType = "tool_call_done"
 	// DeltaDone signals that the stream has finished (no content fields are set).
 	DeltaDone NormalizedDeltaType = "done"
+	// DeltaUsage carries token-count information (InputTokens / OutputTokens).
+	DeltaUsage NormalizedDeltaType = "usage"
 	// DeltaUnknown is emitted for events that carry no recognized content.
 	DeltaUnknown NormalizedDeltaType = "unknown"
 )
@@ -40,6 +42,10 @@ type NormalizedDelta struct {
 	ToolCallSignature string // set on DeltaToolCallBegin / DeltaToolCallDone when provided by provider
 	ArgumentsDelta    string // set on DeltaToolCallArgumentsDelta
 	ArgumentsFull     string // set on DeltaToolCallDone (fully accumulated)
+
+	// Usage fields (set for DeltaUsage).
+	InputTokens  int
+	OutputTokens int
 }
 
 // ParseNormalizedEvent parses a single UnifiedEvent into zero or more NormalizedDelta values.
@@ -93,6 +99,10 @@ type chatCompletionChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 func parseChatCompletionsDelta(ev UnifiedEvent) []NormalizedDelta {
@@ -100,12 +110,23 @@ func parseChatCompletionsDelta(ev UnifiedEvent) []NormalizedDelta {
 	if err := json.Unmarshal(ev.Data, &chunk); err != nil {
 		return nil
 	}
+
+	// Some providers (e.g. those using stream_options: {include_usage: true})
+	// send a final chunk with an empty choices array that carries only usage.
+	// Check usage before the choices guard so it is not silently dropped.
+	var out []NormalizedDelta
 	if len(chunk.Choices) == 0 {
+		if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+			return []NormalizedDelta{{
+				Type:         DeltaUsage,
+				InputTokens:  chunk.Usage.PromptTokens,
+				OutputTokens: chunk.Usage.CompletionTokens,
+			}}
+		}
 		return nil
 	}
 
 	delta := chunk.Choices[0].Delta
-	var out []NormalizedDelta
 
 	if delta.ReasoningContent != "" {
 		out = append(out, NormalizedDelta{Type: DeltaReasoning, Content: delta.ReasoningContent})
@@ -140,6 +161,13 @@ func parseChatCompletionsDelta(ev UnifiedEvent) []NormalizedDelta {
 	}
 
 	if chunk.Choices[0].FinishReason != "" {
+		if chunk.Usage != nil && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
+			out = append(out, NormalizedDelta{
+				Type:         DeltaUsage,
+				InputTokens:  chunk.Usage.PromptTokens,
+				OutputTokens: chunk.Usage.CompletionTokens,
+			})
+		}
 		out = append(out, NormalizedDelta{Type: DeltaDone})
 	}
 
@@ -166,6 +194,13 @@ type responsesEvent struct {
 	CallID      string `json:"call_id"`
 	ItemID      string `json:"item_id"`
 	Arguments   string `json:"arguments"`
+	// For response.completed / response.done events.
+	Response *struct {
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	} `json:"response"`
 }
 
 func parseResponsesDelta(ev UnifiedEvent) []NormalizedDelta {
@@ -230,7 +265,19 @@ func parseResponsesDelta(ev UnifiedEvent) []NormalizedDelta {
 			}}
 		}
 	case "response.completed", "response.done":
-		return []NormalizedDelta{{Type: DeltaDone}}
+		var out []NormalizedDelta
+		if e.Response != nil && e.Response.Usage != nil {
+			u := e.Response.Usage
+			if u.InputTokens > 0 || u.OutputTokens > 0 {
+				out = append(out, NormalizedDelta{
+					Type:         DeltaUsage,
+					InputTokens:  u.InputTokens,
+					OutputTokens: u.OutputTokens,
+				})
+			}
+		}
+		out = append(out, NormalizedDelta{Type: DeltaDone})
+		return out
 	}
 
 	return nil
@@ -287,6 +334,16 @@ type anthropicStreamEvent struct {
 		Name  string `json:"name"`
 		Input string `json:"input"`
 	} `json:"content_block"`
+	// For message_start usage.
+	Message *struct {
+		Usage *struct {
+			InputTokens int `json:"input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+	// For message_delta usage (top-level usage field).
+	Usage *struct {
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 func parseMessagesDelta(ev UnifiedEvent) []NormalizedDelta {
@@ -304,6 +361,13 @@ func parseMessagesDelta(ev UnifiedEvent) []NormalizedDelta {
 	}
 
 	switch evType {
+	case "message_start":
+		if e.Message != nil && e.Message.Usage != nil && e.Message.Usage.InputTokens > 0 {
+			return []NormalizedDelta{{
+				Type:        DeltaUsage,
+				InputTokens: e.Message.Usage.InputTokens,
+			}}
+		}
 	case "content_block_start":
 		if e.ContentBlock.Type == "tool_use" {
 			return []NormalizedDelta{{
@@ -311,6 +375,13 @@ func parseMessagesDelta(ev UnifiedEvent) []NormalizedDelta {
 				ToolCallIndex: e.Index,
 				ToolCallID:    e.ContentBlock.ID,
 				ToolCallName:  e.ContentBlock.Name,
+			}}
+		}
+	case "message_delta":
+		if e.Usage != nil && e.Usage.OutputTokens > 0 {
+			return []NormalizedDelta{{
+				Type:         DeltaUsage,
+				OutputTokens: e.Usage.OutputTokens,
 			}}
 		}
 	case "content_block_delta":
@@ -360,6 +431,10 @@ type geminiChunk struct {
 		} `json:"content"`
 		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
+	UsageMetadata *struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+	} `json:"usageMetadata"`
 }
 
 type geminiFC struct {
@@ -372,12 +447,27 @@ func parseGeminiDelta(ev UnifiedEvent) []NormalizedDelta {
 	if err := json.Unmarshal(ev.Data, &chunk); err != nil {
 		return nil
 	}
+
+	// Emit usage first; some providers send a final candidate-less chunk that
+	// only carries usageMetadata.
+	var out []NormalizedDelta
+	if chunk.UsageMetadata != nil {
+		in := chunk.UsageMetadata.PromptTokenCount
+		outToks := chunk.UsageMetadata.CandidatesTokenCount
+		if in > 0 || outToks > 0 {
+			out = append(out, NormalizedDelta{
+				Type:         DeltaUsage,
+				InputTokens:  in,
+				OutputTokens: outToks,
+			})
+		}
+	}
+
 	if len(chunk.Candidates) == 0 {
-		return nil
+		return out
 	}
 
 	cand := chunk.Candidates[0]
-	var out []NormalizedDelta
 
 	for i, part := range cand.Content.Parts {
 		if part.FunctionCall != nil {

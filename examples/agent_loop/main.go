@@ -57,6 +57,7 @@ func runAgentLoop(client *zen.Client, model string, debugSSE bool, tools map[str
 	}}
 
 	maxSteps := 6
+	var totalIn, totalOut int
 	for step := 0; step < maxSteps; step++ {
 		req := zen.NormalizedRequest{
 			Model:     model,
@@ -82,6 +83,7 @@ func runAgentLoop(client *zen.Client, model string, debugSSE bool, tools map[str
 
 		var text strings.Builder
 		accumulator := zen.NewToolCallAccumulator()
+		var stepIn, stepOut int
 
 		for d := range deltas {
 			switch d.Type {
@@ -91,6 +93,11 @@ func runAgentLoop(client *zen.Client, model string, debugSSE bool, tools map[str
 				fmt.Printf("[reasoning] %s", d.Content)
 			case zen.DeltaToolCallBegin, zen.DeltaToolCallArgumentsDelta, zen.DeltaToolCallDone:
 				accumulator.Apply(d)
+			case zen.DeltaUsage:
+				if d.InputTokens > stepIn {
+					stepIn = d.InputTokens
+				}
+				stepOut += d.OutputTokens
 			}
 		}
 		if err := <-errs; err != nil {
@@ -99,6 +106,10 @@ func runAgentLoop(client *zen.Client, model string, debugSSE bool, tools map[str
 		}
 		cancel()
 
+		totalIn += stepIn
+		totalOut += stepOut
+		fmt.Printf("[usage:step%d] in=%d out=%d\n", step+1, stepIn, stepOut)
+
 		calls := accumulator.CompleteCalls()
 		if len(calls) == 0 {
 			messages = append(messages, zen.NormalizedMessage{
@@ -106,6 +117,7 @@ func runAgentLoop(client *zen.Client, model string, debugSSE bool, tools map[str
 				Content: text.String(),
 			})
 			fmt.Printf("\n[assistant] %s\n", text.String())
+			fmt.Printf("[usage:total] in=%d out=%d\n", totalIn, totalOut)
 			return nil
 		}
 
@@ -144,6 +156,7 @@ func runAgentLoop(client *zen.Client, model string, debugSSE bool, tools map[str
 			})
 		}
 	}
+	fmt.Printf("[usage:total] in=%d out=%d\n", totalIn, totalOut)
 	return fmt.Errorf("max steps reached without final response")
 }
 
