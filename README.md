@@ -142,3 +142,13 @@ This project is not affiliated with opencode.ai.
   - `claude-*` -> `/messages`
   - `gemini-*` -> `/models/<model>`
   - fallback -> `/chat/completions`
+- **Streaming and timeouts:** `Config.Timeout` defaults to `0` (no timeout). Do not
+  set it for streaming calls — `http.Client.Timeout` is a total round-trip deadline
+  that fires while the SSE body is still being read, causing spurious
+  `context deadline exceeded (Client.Timeout ...)` errors. Use the request
+  `context.Context` to enforce deadlines instead:
+  ```go
+  ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+  defer cancel()
+  events, errs, err := client.UnifiedStream(ctx, req)
+  ```

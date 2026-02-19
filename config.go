@@ -16,8 +16,13 @@ type RetryConfig struct {
 }
 
 type Config struct {
-	APIKey     string
-	BaseURL    string
+	APIKey  string
+	BaseURL string
+	// Timeout sets http.Client.Timeout on the internal HTTP client.
+	// Leave at 0 (the default) for streaming calls — http.Client.Timeout is a
+	// total round-trip deadline that fires while the response body is still being
+	// read, which breaks SSE streams that run longer than the timeout.
+	// Use the request context to enforce deadlines on streaming calls instead.
 	Timeout    time.Duration
 	UserAgent  string
 	HTTPClient *http.Client
@@ -34,10 +39,6 @@ func (c *Config) applyDefaults() error {
 	}
 
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
-
-	if c.Timeout == 0 {
-		c.Timeout = 60 * time.Second
-	}
 
 	if strings.TrimSpace(c.UserAgent) == "" {
 		c.UserAgent = "go-opencode-zen-sdk/0.1"
